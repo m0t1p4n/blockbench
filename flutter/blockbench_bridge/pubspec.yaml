@@ -1,0 +1,32 @@
+name: blockbench_bridge
+description: >-
+  Embed the Blockbench low-poly editor inside a Flutter app to load, edit and
+  save Minecraft models (Java Block/Item, Bedrock, bbmodel) with textures.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  webview_flutter: ^4.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  assets:
+    - assets/blockbench_web/
+    - assets/blockbench_web/dist/
+    - assets/blockbench_web/css/
+    - assets/blockbench_web/font/
+    - assets/blockbench_web/lib/
+    - assets/blockbench_web/assets/
+    - assets/blockbench_web/assets/poses/
+    - assets/blockbench_web/assets/splash_art/
+    - assets/blockbench_web/assets/preview_scenes/

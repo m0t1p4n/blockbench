@@ -1,0 +1,19 @@
+name: blockbench_bridge_example
+description: Example app embedding Blockbench to edit Minecraft models.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  blockbench_bridge:
+    path: ../
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

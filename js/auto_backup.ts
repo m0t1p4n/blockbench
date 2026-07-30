@@ -13,7 +13,12 @@ type ProjectSave = {
 //Backup
 export const AutoBackup = {
 	/**
-	 * IndexedDB Database
+	 * IndexedDB Database. Stays null until `initialize` resolves, and forever
+	 * when IndexedDB is unavailable (private mode, storage disabled, embedded
+	 * WebViews). Every method below has to tolerate that: `ModelProject.close`
+	 * awaits `removeBackup`, so a throw here would abort the close half-way —
+	 * after the project was deselected but before the next one gets selected,
+	 * leaving the editor blank.
 	 */
 	db: null as (null | IDBDatabase),
 	initialize(): void {
@@ -71,7 +76,7 @@ export const AutoBackup = {
 		}
 	},
 	async backupOpenProject() {
-		if (!Project) return;
+		if (!Project || !AutoBackup.db) return;
 		let transaction = AutoBackup.db.transaction('projects', 'readwrite');
 		let store = transaction.objectStore('projects');
 
@@ -93,6 +98,7 @@ export const AutoBackup = {
 	 * Test if saved backups exist
 	 */
 	async hasBackups(): Promise<boolean> {
+		if (!AutoBackup.db) return false;
 		let transaction = AutoBackup.db.transaction('projects', 'readonly');
 		let store = transaction.objectStore('projects');
 		return await new Promise(resolve => {
@@ -111,6 +117,7 @@ export const AutoBackup = {
 	 */
 	recoverAllBackups(confirm_selection: boolean = false): Promise<void> {
 		return new Promise<void>((resolve, reject) => {
+			if (!AutoBackup.db) return resolve();
 			let transaction = AutoBackup.db.transaction('projects', 'readonly');
 			let store = transaction.objectStore('projects');
 			let request = store.getAll();
@@ -203,6 +210,7 @@ export const AutoBackup = {
 		})
 	},
 	async removeBackup(uuid: string) {
+		if (!AutoBackup.db) return;
 		let transaction = AutoBackup.db.transaction('projects', 'readwrite');
 		let store = transaction.objectStore('projects');
 		let request = store.delete(uuid);
@@ -215,6 +223,7 @@ export const AutoBackup = {
 		});
 	},
 	async removeAllBackups() {
+		if (!AutoBackup.db) return;
 		let transaction = AutoBackup.db.transaction('projects', 'readwrite');
 		let store = transaction.objectStore('projects');
 		let request = store.clear();
