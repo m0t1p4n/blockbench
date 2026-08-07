@@ -1994,6 +1994,8 @@
 	"action.view_mode.vertex_weight": "Vertex Weight",
 	"action.view_mode.weighted_bone_colors": "Vertex Bone Colors",
 	"action.view_mode.material": "Material Preview",
+	"action.toggle_material_view": "Vibrant Visuals",
+	"action.toggle_material_view.desc": "Shade the model with its MER map — metalness, emission and roughness — reflecting the preview scene",
 	"action.preview_scene": "Preview Scene",
 	"action.preview_scene.desc": "Change the model preview scene",
 	"action.screenshot_model": "Screenshot Model",

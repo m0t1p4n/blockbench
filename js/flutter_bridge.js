@@ -289,30 +289,6 @@ async function addTextureEntry(name, value) {
 	return color_texture;
 }
 
-// Switches the viewport between the plain textured look and the material
-// (PBR) one. Reflections need an environment to reflect, so a preview scene
-// is selected along with it — `studio` ships with the build, the others are
-// fetched from the scene repository and need network.
-function setMaterialViewMode(enabled, scene_id) {
-	if (!Project) return false;
-	let view_mode = enabled ? 'material' : 'textured';
-	if (enabled) {
-		let scene = PreviewScene.scenes[scene_id || 'studio'];
-		if (scene && PreviewScene.active !== scene) scene.select();
-	} else if (PreviewScene.active) {
-		PreviewScene.active.unselect();
-	}
-	Project.view_mode = view_mode;
-	if (BarItems.view_mode) BarItems.view_mode.value = view_mode;
-	// The material is built against the active scene's environment map, so it
-	// has to be refreshed after the scene changed.
-	for (let group of TextureGroup.all) {
-		if (group.is_material) group.updateMaterial();
-	}
-	Canvas.updateViewMode();
-	return Project.view_mode == view_mode;
-}
-
 // All animations of the current project as one bedrock animation file (JSON
 // text), or null when there are none or the format has no animation support.
 function compileProjectAnimations() {
@@ -803,8 +779,11 @@ const BridgeMethods = {
 		// It runs after the mode switch on purpose — that re-applies the
 		// project's own view mode, which would drop the material again.
 		if (params.material && TextureGroup.all.find(group => group.is_material)) {
-			setMaterialViewMode(true, params.preview_scene);
-			setTimeout(() => setMaterialViewMode(true, params.preview_scene), 60);
+			setMaterialViewMode(true, params.preview_scene || 'studio');
+			setTimeout(
+				() => setMaterialViewMode(true, params.preview_scene || 'studio'),
+				60
+			);
 		}
 		// Centre and scale the entity — in the editors as much as in the
 		// preview. A new model is framed again even if the user had moved the
@@ -858,13 +837,13 @@ const BridgeMethods = {
 		Undo.finishEdit('Add texture via Flutter bridge', {textures: [texture]});
 		return texture ? {uuid: texture.uuid, name: texture.name} : {added: false};
 	},
-	// Turns the material (PBR) view mode on or off: with it, a texture group's
-	// MER map drives metalness, emission and roughness, and the model reflects
-	// the selected preview scene.
+	// Turns the material (PBR) view mode on or off — the same switch the
+	// viewport's Vibrant Visuals toggle flips, for hosts that want to drive
+	// it from outside.
 	// params: {enabled: true, scene: 'studio'}
 	setMaterialView(params = {}) {
 		let enabled = params.enabled !== false;
-		let applied = setMaterialViewMode(enabled, params.scene);
+		let applied = setMaterialViewMode(enabled, params.scene || 'studio');
 		return {enabled: applied, view_mode: Project ? Project.view_mode : null};
 	},
 	// params: {codec: 'auto' | codec id, include_textures: true, mark_saved: false}

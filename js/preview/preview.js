@@ -2377,6 +2377,20 @@ BARS.defineActions(function() {
 			//Blockbench.showQuickMessage(tl('action.view_mode') + ': ' + tl('action.view_mode.' + this.value));
 		}
 	})
+	// Bedrock's Vibrant Visuals in the viewport: the model's MER map drives
+	// metalness, emission and roughness, and it reflects the preview scene.
+	// A scene has to be up for there to be anything to reflect, so the
+	// toggle brings one in and takes it away with itself.
+	new Toggle('toggle_material_view', {
+		name: tl('action.toggle_material_view'),
+		description: tl('action.toggle_material_view.desc'),
+		icon: 'fa-wand-magic-sparkles',
+		category: 'view',
+		condition: () => Project && TextureGroup.all.find(group => group.is_material),
+		onChange(value) {
+			setMaterialViewMode(value);
+		}
+	})
 	new Toggle('preview_checkerboard', {
 		icon: 'fas.fa-chess-board',
 		category: 'view',
@@ -2616,9 +2630,35 @@ BARS.defineActions(function() {
 })
 
 
+// Switches the viewport between the plain textured look and the material
+// (PBR) one. The material only shows what the MER map holds when there is an
+// environment to reflect, so a preview scene is selected along with it —
+// `studio` is the one that ships with the build, every other scene is fetched
+// from the scene repository.
+function setMaterialViewMode(enabled, scene_id = 'studio') {
+	if (!Project) return false;
+	if (enabled) {
+		let scene = PreviewScene.scenes[scene_id];
+		if (scene && PreviewScene.active !== scene) scene.select();
+	} else if (PreviewScene.active) {
+		PreviewScene.active.unselect();
+	}
+	Project.view_mode = enabled ? 'material' : 'textured';
+	if (BarItems.view_mode) BarItems.view_mode.value = Project.view_mode;
+	if (BarItems.toggle_material_view) BarItems.toggle_material_view.value = !!enabled;
+	// The materials are built against the active scene's environment map, so
+	// they have to be rebuilt once it changed.
+	for (let group of TextureGroup.all) {
+		if (group.is_material) group.updateMaterial();
+	}
+	Canvas.updateViewMode();
+	return Project.view_mode == (enabled ? 'material' : 'textured');
+}
+
 Object.assign(window, {
 	scene,
 	Sun,
+	setMaterialViewMode,
 	three_grid,
 	gizmo_colors,
 	DefaultCameraPresets,

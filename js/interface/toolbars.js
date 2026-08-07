@@ -799,6 +799,7 @@ export const BARS = {
 				'_',
 				'mirror_modeling',
 				'mirror_animating',
+				'toggle_material_view',
 			]
 		})
 
@@ -896,6 +897,7 @@ export const BARS = {
 				'color_erase_mode',
 				'lock_alpha',
 				'painting_grid',
+				'toggle_material_view',
 				'image_tiled_view',
 				'image_onion_skin_view',
 			]
