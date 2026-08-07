@@ -63,7 +63,12 @@ function createDataResolver(...maps) {
 	for (let map of maps) {
 		if (!map || typeof map != 'object') continue;
 		for (let key in map) {
-			entries.push({key: normalizePath(key), data: map[key]});
+			// A texture entry may carry PBR channels; codecs that resolve
+			// textures by path only ever want the color one.
+			let value = map[key];
+			let data = (value && typeof value == 'object') ? textureChannelsOf(value).color : value;
+			if (data == undefined) continue;
+			entries.push({key: normalizePath(key), data});
 		}
 	}
 	function normalizePath(input) {
@@ -195,8 +200,12 @@ function base64ToUint8Array(base64) {
 
 // Creates a project texture from a data URL. TGA data URLs (which <img>
 // can't display) are decoded through Blockbench's TGA codec onto the canvas.
-async function addTextureFromDataURL(name, data_url) {
+// `options.channel` puts the texture on a PBR channel ('color' | 'mer' |
+// 'normal' | 'height') of `options.group`.
+async function addTextureFromDataURL(name, data_url, options = {}) {
 	let texture = new Texture({name});
+	if (options.group) texture.group = options.group.uuid;
+	if (options.channel) texture.pbr_channel = options.channel;
 	let is_tga = typeof data_url == 'string' && /^data:image\/(x-)?(tga|targa);base64,/i.test(data_url);
 	if (is_tga) {
 		texture.file_format = 'tga';
@@ -207,6 +216,101 @@ async function addTextureFromDataURL(name, data_url) {
 		texture.fromDataURL(data_url).add(false).fillParticle();
 	}
 	return texture;
+}
+
+// The PBR channels a texture entry of loadModel/addTexture may carry:
+// {color: '<data url>', mer: '<data url>', normal: …, height: …}. A plain
+// string is the color channel on its own.
+const PBR_CHANNELS = ['color', 'normal', 'height', 'mer'];
+
+function textureChannelsOf(value) {
+	if (typeof value == 'string') return {color: value};
+	if (!value || typeof value != 'object') return {};
+	let channels = {};
+	for (let channel of PBR_CHANNELS) {
+		if (typeof value[channel] == 'string' && value[channel]) {
+			channels[channel] = value[channel];
+		}
+	}
+	return channels;
+}
+
+// Resolves once the texture's bitmap is in memory. Texture.load() only kicks
+// the <img> off, and a material built before it decoded silently drops the
+// MER maps (the group reads `mer_tex.width` and the canvas pixels).
+//
+// The image's own load event is no help: every Texture starts on the
+// placeholder art, so it is already "loaded" — Blockbench setting the
+// texture's size in its own handler is what says the real file arrived.
+function waitForTextureLoad(texture) {
+	return new Promise(resolve => {
+		let attempts = 0;
+		(function check() {
+			// 5s cap: a broken texture must never hang the model load.
+			if (!texture || (texture.width && texture.height) || ++attempts > 200) {
+				return resolve();
+			}
+			setTimeout(check, 25);
+		})();
+	});
+}
+
+// Adds one entry of loadModel's `textures` map. With more than the color
+// channel the textures land in a material texture group, which is what makes
+// Blockbench shade the model through a MeshStandardMaterial (metalness,
+// emissive and roughness out of the MER map).
+async function addTextureEntry(name, value) {
+	let channels = textureChannelsOf(value);
+	let channel_names = Object.keys(channels);
+	if (!channel_names.length) return null;
+
+	if (channel_names.length == 1 && channels.color) {
+		return await addTextureFromDataURL(name, channels.color);
+	}
+
+	let group = new TextureGroup({name, is_material: true}).add(false);
+	let base_name = name.replace(/\.\w+$/, '');
+	let color_texture = null;
+	let textures = [];
+	for (let channel of PBR_CHANNELS) {
+		if (!channels[channel]) continue;
+		let texture_name = channel == 'color' ? name : `${base_name}_${channel}`;
+		let texture = await addTextureFromDataURL(texture_name, channels[channel], {
+			group,
+			channel,
+		});
+		textures.push(texture);
+		if (channel == 'color') color_texture = texture;
+	}
+	// The material reads the bitmaps, so every channel has to be decoded
+	// before it is built.
+	await Promise.all(textures.map(waitForTextureLoad));
+	group.updateMaterial();
+	return color_texture;
+}
+
+// Switches the viewport between the plain textured look and the material
+// (PBR) one. Reflections need an environment to reflect, so a preview scene
+// is selected along with it — `studio` ships with the build, the others are
+// fetched from the scene repository and need network.
+function setMaterialViewMode(enabled, scene_id) {
+	if (!Project) return false;
+	let view_mode = enabled ? 'material' : 'textured';
+	if (enabled) {
+		let scene = PreviewScene.scenes[scene_id || 'studio'];
+		if (scene && PreviewScene.active !== scene) scene.select();
+	} else if (PreviewScene.active) {
+		PreviewScene.active.unselect();
+	}
+	Project.view_mode = view_mode;
+	if (BarItems.view_mode) BarItems.view_mode.value = view_mode;
+	// The material is built against the active scene's environment map, so it
+	// has to be refreshed after the scene changed.
+	for (let group of TextureGroup.all) {
+		if (group.is_material) group.updateMaterial();
+	}
+	Canvas.updateViewMode();
+	return Project.view_mode == view_mode;
 }
 
 // All animations of the current project as one bedrock animation file (JSON
@@ -233,6 +337,8 @@ function getTextureList() {
 			namespace: texture.namespace,
 			particle: texture.particle,
 			render_mode: texture.render_mode,
+			pbr_channel: texture.pbr_channel,
+			group: texture.group,
 			width: texture.width,
 			height: texture.height,
 			source
@@ -614,6 +720,8 @@ const BridgeMethods = {
 	//   files: {'block/cube_all.json': '<json text>'},            optional, parent models etc.
 	//   animations: {'entity.animation.json': '<json text>'},     optional, bedrock animation files
 	//   mode: 'edit' | 'paint' | 'animate' | 'display',           optional, mode to open in
+	//   material: false,               open in the material (PBR) view mode
+	//   preview_scene: 'studio',       environment the material reflects
 	//   import_to_current_project: false
 	// }
 	async loadModel(params = {}) {
@@ -649,7 +757,7 @@ const BridgeMethods = {
 			for (let key in params.textures) {
 				let texture_name = key.split(/[\\\/]/).last();
 				if (!texture_name.includes('.')) texture_name += '.png';
-				await addTextureFromDataURL(texture_name, params.textures[key]);
+				await addTextureEntry(texture_name, params.textures[key]);
 			}
 			if (Texture.all.length) Texture.all[0].select();
 		}
@@ -687,6 +795,17 @@ const BridgeMethods = {
 			}
 		}
 		stripPreviewDecorations();
+		// A material group only shows through in the material view mode, and
+		// its reflections need an environment (the preview scene). Both are
+		// opt-in: `material: true` opens the model shaded, otherwise the MER
+		// map rides along unused until setMaterialView turns it on.
+		//
+		// It runs after the mode switch on purpose — that re-applies the
+		// project's own view mode, which would drop the material again.
+		if (params.material && TextureGroup.all.find(group => group.is_material)) {
+			setMaterialViewMode(true, params.preview_scene);
+			setTimeout(() => setMaterialViewMode(true, params.preview_scene), 60);
+		}
 		// Centre and scale the entity — in the editors as much as in the
 		// preview. A new model is framed again even if the user had moved the
 		// camera around the previous one. Runs after setMode: switching to
@@ -724,13 +843,29 @@ const BridgeMethods = {
 		return {mode: Modes.selected ? Modes.selected.id : null};
 	},
 	// params: {name: 'stone.png', data: 'data:image/png;base64,...' (PNG or TGA)}
+	// params: {
+	//   name: 'zombie.png',
+	//   data: 'data:image/png;base64,...'   or  {color, mer, normal, height}
+	// }
 	async addTexture(params = {}) {
 		if (!Project) throw new Error('No open project');
-		if (typeof params.data != 'string') throw new Error('addTexture: params.data must be a data URL');
+		let channels = textureChannelsOf(params.data);
+		if (!Object.keys(channels).length) {
+			throw new Error('addTexture: params.data must be a data URL or a channel map');
+		}
 		Undo.initEdit({textures: []});
-		let texture = await addTextureFromDataURL(params.name || 'texture.png', params.data);
+		let texture = await addTextureEntry(params.name || 'texture.png', params.data);
 		Undo.finishEdit('Add texture via Flutter bridge', {textures: [texture]});
-		return {uuid: texture.uuid, name: texture.name};
+		return texture ? {uuid: texture.uuid, name: texture.name} : {added: false};
+	},
+	// Turns the material (PBR) view mode on or off: with it, a texture group's
+	// MER map drives metalness, emission and roughness, and the model reflects
+	// the selected preview scene.
+	// params: {enabled: true, scene: 'studio'}
+	setMaterialView(params = {}) {
+		let enabled = params.enabled !== false;
+		let applied = setMaterialViewMode(enabled, params.scene);
+		return {enabled: applied, view_mode: Project ? Project.view_mode : null};
 	},
 	// params: {codec: 'auto' | codec id, include_textures: true, mark_saved: false}
 	async getModel(params = {}) {
