@@ -8,3 +8,8 @@ electron-builder.env
 node_modules/
 workbox-*.js
 service_worker.js
+
+# Build output of the embedded web app, synced into the Flutter package by
+# flutter/blockbench_bridge/tool/sync_web_assets.sh — regenerate it with
+# `npm run build-web`, don't carry it in the history.
+flutter/blockbench_bridge/assets/blockbench_web/
