@@ -109,6 +109,17 @@ function detectFormat(name, model) {
 	return 'java_block';
 }
 
+// What the host's own header needs to draw its back / forward buttons.
+function historyState() {
+	let history = (typeof Undo != 'undefined' && Undo.history) ? Undo.history : [];
+	let index = (typeof Undo != 'undefined' && Undo.index) || 0;
+	return {can_undo: index > 0, can_redo: index < history.length};
+}
+
+function postHistory() {
+	post('history', historyState());
+}
+
 function projectInfo(project = Project) {
 	if (!project) return {has_project: false};
 	let info = {
@@ -119,6 +130,7 @@ function projectInfo(project = Project) {
 		saved: project.saved
 	};
 	if (silent_project_uuids.has(project.uuid)) info.placeholder = true;
+	Object.assign(info, historyState());
 	return info;
 }
 
@@ -1053,7 +1065,12 @@ Blockbench.on('finished_edit', () => {
 	edit_timeout = setTimeout(() => {
 		post('edited', projectInfo());
 	}, 80);
+	postHistory();
 });
+// The host draws the back / forward buttons, so it has to hear about every
+// move of the undo stack — its own calls included.
+Blockbench.on('undo', postHistory);
+Blockbench.on('redo', postHistory);
 Blockbench.on('select_project', ({project}) => {
 	if (creating_placeholder) {
 		if (project) silent_project_uuids.add(project.uuid);
@@ -1104,6 +1121,10 @@ function applyEmbeddedTweaks() {
 		body.flutter_embedded .project_tab.new_tab { display: none !important; }
 		body.flutter_embedded #title_bar_home_button { display: none !important; }
 		body.flutter_embedded #web_download_button { display: none !important; }
+		/* The mobile header (menu, search, undo/redo, mode switcher) is the
+		   host app's business — it draws those in its own page header and
+		   drives them over the bridge. */
+		body.flutter_embedded > header { display: none !important; }
 	`;
 	document.head.appendChild(style);
 }
