@@ -1,0 +1,25 @@
+# Generated Dart/Flutter files — these are recreated per machine and embed
+# absolute local paths, so they must never be committed. Patterns are
+# unanchored on purpose so they also cover example/.
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+*.log
+
+# Platform tooling output (machine-specific)
+**/android/local.properties
+**/ios/.symlinks/
+**/Flutter/ephemeral/
+**/flutter/ephemeral/
+**/Flutter/Generated.xcconfig
+**/Flutter/flutter_export_environment.sh
+
+# IDE and OS clutter
+.DS_Store
+.idea/
+*.iml
+*.swp
