@@ -2242,6 +2242,7 @@ export function animate() {
 	}
 	if (Preview.selected) {
 		WinterskyScene.updateFacingRotation(Preview.selected.camera);
+		aimMaterialLights(Preview.selected);
 	}
 	Preview.all.forEach(function(prev) {
 		if (prev.canvas.isConnected) {
@@ -2258,6 +2259,98 @@ export function animate() {
 	Blockbench.dispatchEvent('render_frame');
 }
 
+// The material view's lights. One light shows a MER map poorly: metal only
+// catches a highlight on the faces turned towards it, and every side turned
+// away goes flat. This is a studio of small, hard lights set around the model
+// instead — a sun above it to the left, a glint light beside the camera, a
+// rim on either side behind it and the sky above — and it turns with the
+// camera, so whichever side the viewer orbits to is lit the same way, and
+// metal, glow and roughness read on all of them. The sun shapes the model;
+// the glint light is the one that puts a highlight on a face turned to the
+// viewer — a block's or an item's texture — which the sun, off to the side,
+// would miss.
+//
+// They are point lights standing as far from the model as the camera.
+// Directional light falls on a flat face evenly and shows no shine on it at
+// all; from a point, each texel sees the light from its own angle, so the
+// highlight lands as a spot that slides over the face as it turns.
+//   azimuth: degrees around the model from the camera, positive to its right
+//   elevation: degrees above the horizon
+const MATERIAL_LIGHT_RIG = [
+	{azimuth: -50, elevation: 45, intensity: 0.85},		// sun
+	{azimuth: 15, elevation: 10, intensity: 0.2},		// glint
+	{azimuth: -140, elevation: 25, intensity: 0.35},	// rim
+	{azimuth: 140, elevation: 25, intensity: 0.35},		// rim
+	{azimuth: 0, elevation: 80, intensity: 0.08},		// sky
+];
+// How big the lights are. A three.js light has no size, so the spread of the
+// highlight it leaves is the surface's roughness alone — and at vanilla's
+// usual 0.4 to 0.7 that smears one light across a whole face, like a big soft
+// lamp. The roughness the lights see is scaled down, which makes them small,
+// hard sources: each lands like a ray, as a tight glint, and a smooth texel
+// still reads sharper than a rough one. What the scene reflects keeps the
+// map's own roughness.
+const MATERIAL_LIGHT_SIZE = 0.35;
+// The scene's sky lights the model from every direction at once — the
+// biggest, softest light there is, which spreads over the whole model.
+// Turned down, it still gives metal something to mirror, while the rig's
+// small lights shape the model and put the glints on it.
+const MATERIAL_ENVIRONMENT = 0.65;
+// An even light over the whole model, so the sides the rig's lights miss
+// don't go dark. It leaves no highlight, so the lights stay small; and it
+// only reaches what isn't metal — metal takes its brightness from what it
+// mirrors instead.
+const MATERIAL_AMBIENT = 0.35;
+const material_lights = MATERIAL_LIGHT_RIG.map(() => new THREE.PointLight());
+
+// Sets a material view material up for the rig: how much of the scene it
+// reflects, and how big it sees the lights (MATERIAL_LIGHT_SIZE) — the
+// roughness three.js hands the direct lights' highlight is scaled, the one
+// the reflection is read with is not.
+export function fitMaterialToLightRig(material) {
+	material.envMapIntensity = MATERIAL_ENVIRONMENT;
+	material.onBeforeCompile = shader => {
+		let target = 'material.specularColor, material.specularRoughness)';
+		let chunk = THREE.ShaderChunk.lights_physical_pars_fragment;
+		if (!chunk.includes(target)) {
+			return console.warn('fitMaterialToLightRig: three.js changed its direct light, the lights keep their size');
+		}
+		shader.fragmentShader = shader.fragmentShader.replace(
+			'#include <lights_physical_pars_fragment>',
+			chunk.replace(target, `material.specularColor, max(material.specularRoughness * ${MATERIAL_LIGHT_SIZE.toFixed(2)}, 0.04))`)
+		);
+	};
+}
+
+function updateMaterialLights(enabled, brightness) {
+	material_lights.forEach((light, i) => {
+		if (!enabled) return Canvas.scene.remove(light);
+		light.color.copy(Canvas.global_light_color);
+		light.intensity = MATERIAL_LIGHT_RIG[i].intensity * brightness;
+		Canvas.scene.add(light);
+	});
+	if (enabled && Preview.selected) aimMaterialLights(Preview.selected);
+}
+
+// Swings the rig round to the camera. Runs every frame, and only follows the
+// camera around the vertical axis: the sky stays above.
+function aimMaterialLights(preview) {
+	if (!material_lights[0].parent || !preview.controls) return;
+	let {position} = preview.camera;
+	let {target} = preview.controls;
+	let yaw = Math.atan2(position.x - target.x, position.z - target.z);
+	let distance = position.distanceTo(target);
+	material_lights.forEach((light, i) => {
+		let azimuth = yaw + Math.degToRad(MATERIAL_LIGHT_RIG[i].azimuth);
+		let elevation = Math.degToRad(MATERIAL_LIGHT_RIG[i].elevation);
+		light.position.set(
+			Math.sin(azimuth) * Math.cos(elevation),
+			Math.sin(elevation),
+			Math.cos(azimuth) * Math.cos(elevation)
+		).multiplyScalar(distance).add(target);
+	});
+}
+
 export function updateShading() {
 	Canvas.updateLayeredTextures();
 	Canvas.scene.remove(lights);
@@ -2266,27 +2359,11 @@ export function updateShading() {
 	let view_mode = window.BarItems ? BarItems.view_mode?.value : 'textured';
 
 	lights.add(Sun);
+	updateMaterialLights(view_mode == 'material', settings_brightness);
 	if (view_mode == 'material') {
 
-		let light = Canvas.material_light;
-		if (!light) {
-			Canvas.material_light = light = new THREE.DirectionalLight();
-		}
-		light.color.copy(Canvas.global_light_color);
-		light.intensity = 0.7 * settings_brightness;
-
-		Canvas.scene.add(light);
-		switch (Canvas.global_light_side) {
-			case 0: light.position.set(60, 100, 20); break;
-			case 1: light.position.set(-10, 20, 100); break;
-			case 2: light.position.set(10, 20, -100); break;
-			case 3: light.position.set(100, 20, -10); break;
-			case 4: light.position.set(-100, 20, 10); break;
-			case 5: light.position.set(20, -100, 0); break;
-		}
-
 		scene.add(Sun);
-		Sun.intensity *= 0.5;
+		Sun.intensity *= MATERIAL_AMBIENT;
 
 		TextureGroup.all.forEach(tg => {
 			if (tg.is_material) tg.updateMaterial();
@@ -2300,9 +2377,6 @@ export function updateShading() {
 			lights.position.copy(parent.position).multiplyScalar(-1);
 		} else {
 			Canvas.scene.add(Sun);
-		}
-		if (Canvas.material_light) {
-			Canvas.scene.remove(Canvas.material_light);
 		}
 		Texture.all.forEach(tex => {
 			let material = tex.getMaterial();
@@ -2633,14 +2707,18 @@ BARS.defineActions(function() {
 // Switches the viewport between the plain textured look and the material
 // (PBR) one. The material only shows what the MER map holds when there is an
 // environment to reflect, so a preview scene is selected along with it —
-// `studio` is the one that ships with the build, every other scene is fetched
-// from the scene repository.
-function setMaterialViewMode(enabled, scene_id = 'studio') {
+// `studio` and `minecraft_plains` ship with the build, every other scene is
+// fetched from the scene repository. Without a scene named, the view comes
+// back in the one it was last in.
+let material_view_scene = 'studio';
+function setMaterialViewMode(enabled, scene_id = material_view_scene) {
 	if (!Project) return false;
 	if (enabled) {
 		let scene = PreviewScene.scenes[scene_id];
+		if (scene) material_view_scene = scene_id;
 		if (scene && PreviewScene.active !== scene) scene.select();
 	} else if (PreviewScene.active) {
+		material_view_scene = PreviewScene.active.id;
 		PreviewScene.active.unselect();
 	}
 	Project.view_mode = enabled ? 'material' : 'textured';
@@ -2659,6 +2737,7 @@ Object.assign(window, {
 	scene,
 	Sun,
 	setMaterialViewMode,
+	fitMaterialToLightRig,
 	three_grid,
 	gizmo_colors,
 	DefaultCameraPresets,

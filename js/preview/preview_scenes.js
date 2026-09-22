@@ -27,6 +27,7 @@ export class PreviewScene {
 	extend(data) {
 		this.loaded = data.web_config ? false : true;
 		this.web_config_path = data.web_config;
+		if (data.repository) this.repository = data.repository;
 		if (data.require_minecraft_eula) this.require_minecraft_eula = true;
 
 		this.name = tl(data.name || `preview_scene.${this.id}`);
@@ -75,7 +76,7 @@ export class PreviewScene {
 		}
 	}
 	async lazyLoadFromWeb() {
-		let repo = PreviewScene.source_repository;
+		let repo = this.repository || PreviewScene.source_repository;
 		// repo = './../blockbench-scenes'
 		this.loaded = true;
 		let response = await fetch(`${repo}/${this.web_config_path}`);
@@ -437,9 +438,13 @@ new PreviewScene('space', {
 	category: 'realistic',
 	web_config: 'realistic/space/space.json',
 });
+// Ships with the build (assets/preview_scenes/), so it is there offline and
+// opens without a round trip to the scene repository — it is the scene the
+// Flutter bridge opens the material view in.
 new PreviewScene('minecraft_plains', {
 	category: 'minecraft',
-	web_config: 'minecraft/plains/plains.json',
+	repository: './assets/preview_scenes',
+	web_config: 'minecraft_plains.json',
 	require_minecraft_eula: true,
 });
 new PreviewScene('minecraft_snowy_tundra', {
