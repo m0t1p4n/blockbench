@@ -267,6 +267,27 @@ function waitForTextureLoad(texture) {
 	});
 }
 
+// Brings a preview scene up and resolves once it is really there — its config
+// read and its skybox decoded — so the model shows in it from the first frame
+// the host lets through, and the material is built against what it reflects
+// rather than against an empty sky.
+async function selectPreviewScene(id) {
+	let scene = PreviewScene.scenes[id];
+	if (!scene) return;
+	if (PreviewScene.active !== scene) await scene.select();
+	let cubemap = scene.cubemap;
+	if (!cubemap) return;
+	await new Promise(resolve => {
+		let attempts = 0;
+		(function check() {
+			// The loader bumps the version once all six faces are in. 5s cap:
+			// a skybox that fails to load must never hang the model load.
+			if (cubemap.version > 0 || ++attempts > 200) return resolve();
+			setTimeout(check, 25);
+		})();
+	});
+}
+
 // Adds one entry of loadModel's `textures` map. With more than the color
 // channel the textures land in a material texture group, which is what makes
 // Blockbench shade the model through a MeshStandardMaterial (metalness,
@@ -581,9 +602,7 @@ function modelBoundingBox() {
 }
 
 // Turns the camera to look at the model from the south (+Z), level with its
-// centre — straight onto the face a flat texture's plane carries it on. The
-// studio scene is lit from behind the model that way, so a metal texture
-// mirrors the bright side of the room rather than the dark one.
+// centre — straight onto the face a flat texture's plane carries it on.
 function faceCameraSouth() {
 	let preview = typeof Preview != 'undefined' && Preview.selected;
 	if (!preview || !preview.controls) return;
@@ -724,7 +743,7 @@ const BridgeMethods = {
 	//   animations: {'entity.animation.json': '<json text>'},     optional, bedrock animation files
 	//   mode: 'edit' | 'paint' | 'animate' | 'display',           optional, mode to open in
 	//   material: false,               open in the material (PBR) view mode
-	//   preview_scene: 'studio',       environment the material reflects
+	//   preview_scene: 'minecraft_plains',   environment the material reflects
 	//   view: 'south',                 open looking at the model from the south, straight on
 	//   import_to_current_project: false
 	// }
@@ -817,16 +836,14 @@ const BridgeMethods = {
 		// It runs after the mode switch on purpose — that re-applies the
 		// project's own view mode, which would drop the material again.
 		if (params.material && TextureGroup.all.find(group => group.is_material)) {
-			setMaterialViewMode(true, params.preview_scene || 'studio');
-			setTimeout(
-				() => setMaterialViewMode(true, params.preview_scene || 'studio'),
-				60
-			);
+			let scene = params.preview_scene || 'minecraft_plains';
+			await selectPreviewScene(scene);
+			setMaterialViewMode(true, scene);
+			setTimeout(() => setMaterialViewMode(true, scene), 60);
 		}
 		// A flat texture reads best straight on — the three-quarter view
-		// from above shows it skewed, or its back, and a metal one mirrors
-		// the dark ceiling. The user turns it from there; the framing below
-		// keeps whichever angle the camera has.
+		// from above shows it skewed, or its back. The user turns it from
+		// there; the framing below keeps whichever angle the camera has.
 		if (params.view == 'south') faceCameraSouth();
 		// Centre and scale the entity — in the editors as much as in the
 		// preview. A new model is framed again even if the user had moved the
@@ -882,11 +899,12 @@ const BridgeMethods = {
 	},
 	// Turns the material (PBR) view mode on or off — the same switch the
 	// viewport's Vibrant Visuals toggle flips, for hosts that want to drive
-	// it from outside.
-	// params: {enabled: true, scene: 'studio'}
-	setMaterialView(params = {}) {
+	// it from outside. Without a scene it comes back in the one it was last in.
+	// params: {enabled: true, scene: 'minecraft_plains'}
+	async setMaterialView(params = {}) {
 		let enabled = params.enabled !== false;
-		let applied = setMaterialViewMode(enabled, params.scene || 'studio');
+		if (enabled && params.scene) await selectPreviewScene(params.scene);
+		let applied = setMaterialViewMode(enabled, params.scene);
 		return {enabled: applied, view_mode: Project ? Project.view_mode : null};
 	},
 	// params: {codec: 'auto' | codec id, include_textures: true, mark_saved: false}
@@ -1148,6 +1166,12 @@ Blockbench.on('quick_save_model', () => {
 // The host app is expected to open a model through the bridge right away.
 function applyEmbeddedTweaks() {
 	if (!FlutterBridge.embedded) return;
+	// The host app ships the Minecraft assets it hands the editor, and its own
+	// terms are where they are agreed to — the preview scenes are no different.
+	// The EULA dialog would ask a second time, and in the chromeless preview,
+	// where every dialog is hidden, nobody could answer it: the scene would
+	// never load.
+	if (window.MinecraftEULA) MinecraftEULA.promptUser = async () => true;
 	// `?preview=1` strips the editor down to the bare viewport
 	if (Blockbench.queries && Blockbench.queries.preview && !preview_mode) {
 		applyPreviewChrome(true);
