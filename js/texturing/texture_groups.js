@@ -98,9 +98,9 @@ export class TextureGroup {
 		
 		if (!material) {
 			material = this._static.properties.material = new THREE.MeshStandardMaterial({
-				envMapIntensity: 0.8,
 				alphaTest: 0.05,
 			});
+			fitMaterialToLightRig(material);
 		}
 
 		if (PreviewScene.active) {
