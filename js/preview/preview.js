@@ -2297,19 +2297,29 @@ const MATERIAL_LIGHT_SIZE = 0.35;
 // small lights shape the model and put the glints on it.
 const MATERIAL_ENVIRONMENT = 0.65;
 // An even light over the whole model, so the sides the rig's lights miss
-// don't go dark. It leaves no highlight, so the lights stay small; and it
-// only reaches what isn't metal — metal takes its brightness from what it
-// mirrors instead.
+// don't go dark. It leaves no highlight, so the lights stay small.
 const MATERIAL_AMBIENT = 0.35;
+// How much of that light metal takes the way the rest of the model does. A
+// metal only mirrors, so it would take the rig's small lights as glints and
+// nothing more — armor, which vanilla maps three-quarters metal, drew at half
+// the light a mob does, and read dark. Metal takes the light as a matte
+// surface of its colour would, its shine on top.
+const MATERIAL_METAL_FILL = 1;
 const material_lights = MATERIAL_LIGHT_RIG.map(() => new THREE.PointLight());
 
 // Sets a material view material up for the rig: how much of the scene it
-// reflects, and how big it sees the lights (MATERIAL_LIGHT_SIZE) — the
+// reflects, how big it sees the lights (MATERIAL_LIGHT_SIZE) — the
 // roughness three.js hands the direct lights' highlight is scaled, the one
-// the reflection is read with is not.
+// the reflection is read with is not — and how much light its metal takes
+// (MATERIAL_METAL_FILL).
 export function fitMaterialToLightRig(material) {
 	material.envMapIntensity = MATERIAL_ENVIRONMENT;
 	material.onBeforeCompile = shader => {
+		shader.fragmentShader = shader.fragmentShader.replace(
+			'#include <lights_physical_fragment>',
+			`#include <lights_physical_fragment>
+			material.diffuseColor += diffuseColor.rgb * metalnessFactor * ${MATERIAL_METAL_FILL.toFixed(2)};`
+		);
 		let target = 'material.specularColor, material.specularRoughness)';
 		let chunk = THREE.ShaderChunk.lights_physical_pars_fragment;
 		if (!chunk.includes(target)) {
