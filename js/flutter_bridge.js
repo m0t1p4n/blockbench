@@ -580,6 +580,21 @@ function modelBoundingBox() {
 	return found && !box.isEmpty() ? box : null;
 }
 
+// Turns the camera to look at the model from the south (+Z), level with its
+// centre — straight onto the face a flat texture's plane carries it on. The
+// studio scene is lit from behind the model that way, so a metal texture
+// mirrors the bright side of the room rather than the dark one.
+function faceCameraSouth() {
+	let preview = typeof Preview != 'undefined' && Preview.selected;
+	if (!preview || !preview.controls) return;
+	let box = modelBoundingBox();
+	let target = box ? box.getCenter(new THREE.Vector3()) : preview.controls.target.clone();
+	let distance = preview.camera.position.distanceTo(preview.controls.target) || 64;
+	preview.camera.position.set(target.x, target.y, target.z + distance);
+	preview.controls.target.copy(target);
+	preview.controls.update();
+}
+
 // Points the camera at the model's centre and pulls it back just far enough to
 // hold the whole model, so a chicken and an ender dragon both fill the same
 // share of the viewport. The viewing angle is kept as-is.
@@ -710,6 +725,7 @@ const BridgeMethods = {
 	//   mode: 'edit' | 'paint' | 'animate' | 'display',           optional, mode to open in
 	//   material: false,               open in the material (PBR) view mode
 	//   preview_scene: 'studio',       environment the material reflects
+	//   view: 'south',                 open looking at the model from the south, straight on
 	//   import_to_current_project: false
 	// }
 	async loadModel(params = {}) {
@@ -762,6 +778,16 @@ const BridgeMethods = {
 				}
 			}
 		}
+		// The codec opened the model in a project of its own, and the boot
+		// placeholder is retired right after: closing it re-selects, which
+		// puts the default mode, view and camera back. Wait it out, and make
+		// sure the model is the project on screen before its mode, material
+		// and camera are set below.
+		let loaded = Project;
+		await settlePlaceholder();
+		if (loaded && Project !== loaded && ModelProject.all.includes(loaded)) {
+			loaded.select();
+		}
 		if (Project) {
 			if (params.name && !Project.name) Project.name = name.replace(/\.\w+$/, '');
 			Project.saved = true;
@@ -797,6 +823,11 @@ const BridgeMethods = {
 				60
 			);
 		}
+		// A flat texture reads best straight on — the three-quarter view
+		// from above shows it skewed, or its back, and a metal one mirrors
+		// the dark ceiling. The user turns it from there; the framing below
+		// keeps whichever angle the camera has.
+		if (params.view == 'south') faceCameraSouth();
 		// Centre and scale the entity — in the editors as much as in the
 		// preview. A new model is framed again even if the user had moved the
 		// camera around the previous one. Runs after setMode: switching to
@@ -896,10 +927,20 @@ const BridgeMethods = {
 		if (!Project) throw new Error('No open project');
 		return {animations: compileProjectAnimations()};
 	},
+	// params: {crop: true, width, height, plain: true}
+	// `plain` (the default) takes the model alone: the material view's scene
+	// fills the whole frame — nothing transparent left for the crop to trim —
+	// so it is switched off for the shot and back on right after, all within
+	// one frame, never painted.
 	getScreenshot(params = {}) {
 		return new Promise(resolve => {
 			if (!Project) throw new Error('No open project');
+			let scene = params.plain !== false && Project.view_mode == 'material'
+				? ((PreviewScene.active && PreviewScene.active.id) || 'studio')
+				: null;
+			if (scene) setMaterialViewMode(false);
 			Screencam.screenshotPreview(Preview.selected, {crop: params.crop !== false, width: params.width, height: params.height}, data => {
+				if (scene) setMaterialViewMode(true, scene);
 				resolve({data});
 			});
 		});
