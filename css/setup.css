@@ -104,20 +104,6 @@
 	@font-face {
 		font-family: 'Assistant';
 		font-style: normal;
-		font-weight: 200;
-		src: local('Assistant-ExtraLight'),
-			url(../font/Assistant-ExtraLight.ttf) format('truetype');
-	}
-	@font-face {
-		font-family: 'Assistant';
-		font-style: normal;
-		font-weight: 300;
-		src: local('Assistant-Light'),
-			url(../font/Assistant-Light.ttf) format('truetype');
-	}
-	@font-face {
-		font-family: 'Assistant';
-		font-style: normal;
 		font-weight: 400;
 		src: local('Assistant-Regular'),
 			url(../font/Assistant-Regular.ttf) format('truetype');
@@ -135,21 +121,6 @@
 		font-weight: 600;
 		src: local('Assistant-Bold'),
 			url(../font/Assistant-Bold.ttf) format('truetype');
-	}
-	@font-face {
-		font-family: 'Assistant';
-		font-style: normal;
-		font-weight: 700;
-		src: local('Assistant-ExtraBold'),
-			url(../font/Assistant-ExtraBold.ttf) format('truetype');
-	}
-	@font-face {
-		font-family: 'Montserrat';
-		font-style: normal;
-		font-weight: 100 1000;
-		src: local('Montserrat-VariableFont'),
-			url(../font/Montserrat-VariableFont_wght.ttf) format('truetype'),
-			url(../font/Montserrat-VariableFont_wght.ttf) format('truetype');
 	}
 	
 	/* https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:FILL@1 */
@@ -375,7 +346,7 @@
 		--color-dark: #101316;
 		--color-border: #101316;
 		--color-ui: #1e2127;
-		--color-accent: #3e90ff;
+		--color-accent: #5DA043;		/* the app's primary */
 		--color-button: #33383f;
 		--color-selected: #3b3e49;
 		--color-elevated: #272a31;
@@ -416,7 +387,7 @@
 		--font-custom-code: '';
 
 		--font-main: var(--font-custom-main), Assistant, segoe ui, sans-serif;
-		--font-headline: var(--font-custom-headline), Montserrat, segoe ui, sans-serif;
+		--font-headline: var(--font-custom-headline), segoe ui, sans-serif;
 		--font-code: var(--font-custom-code), Consolas, Monospace;
 	}
 

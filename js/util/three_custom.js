@@ -165,7 +165,7 @@ THREE.Object3D.prototype.toScreenPosition = function(camera, canvas)
 
 	vector.x = ( vector.x * widthHalf ) + widthHalf;
 	vector.y = - ( vector.y * heightHalf ) + heightHalf;
-	vector.divideScalar(window.devicePixelRatio);
+	vector.divideScalar(getPixelRatio());
 
 	return { 
 		x: vector.x,

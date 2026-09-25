@@ -232,7 +232,7 @@ function setupSettings() {
 		Canvas.updatePixelGrid();
 		UVEditor.vue.pixel_grid = value;
 	}});
-	new Setting('painting_grid',		{category: 'grid', value: true, onChange(value) {
+	new Setting('painting_grid',		{category: 'grid', value: false, onChange(value) {
 		Canvas.updatePixelGrid();
 		UVEditor.vue.pixel_grid = value;
 	}});

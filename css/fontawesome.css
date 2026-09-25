@@ -7762,12 +7762,6 @@ readers do not read off random characters that represent icons */
   .fa-steam-symbol:before {
     content: "\f3f6"; }
 
-  @font-face {
-    font-family: 'Font Awesome 6 Brands';
-    font-style: normal;
-    font-weight: normal;
-    font-display: auto;
-    src: url("../font/fa-brands-400.woff2") format("woff2")}
 
   .fa {
     font-family: 'Font Awesome 6 Free';

@@ -2152,8 +2152,8 @@ BARS.defineActions(function() {
 			let vector = new THREE.Vector3();
 
 			function projectPoint(vector) {
-				let widthHalf = 0.5 * preview.canvas.width / window.devicePixelRatio;
-				let heightHalf = 0.5 * preview.canvas.height / window.devicePixelRatio;
+				let widthHalf = 0.5 * preview.canvas.width / getPixelRatio();
+				let heightHalf = 0.5 * preview.canvas.height / getPixelRatio();
 				vector.project(preview.camera);
 				return [
 					 ( vector.x * widthHalf ) + widthHalf,

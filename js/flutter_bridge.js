@@ -837,6 +837,9 @@ const BridgeMethods = {
 		// project's own view mode, which would drop the material again.
 		if (params.material && TextureGroup.all.find(group => group.is_material)) {
 			let scene = params.preview_scene || 'minecraft_plains';
+			// `background: false` keeps the scene as the light the model
+			// mirrors, but leaves its sky undrawn — the editor's look.
+			PreviewScene.setBackgroundVisible(params.background !== false);
 			await selectPreviewScene(scene);
 			setMaterialViewMode(true, scene);
 			setTimeout(() => setMaterialViewMode(true, scene), 60);
@@ -900,9 +903,12 @@ const BridgeMethods = {
 	// Turns the material (PBR) view mode on or off — the same switch the
 	// viewport's Vibrant Visuals toggle flips, for hosts that want to drive
 	// it from outside. Without a scene it comes back in the one it was last in.
-	// params: {enabled: true, scene: 'minecraft_plains'}
+	// params: {enabled: true, scene: 'minecraft_plains', background: true}
 	async setMaterialView(params = {}) {
 		let enabled = params.enabled !== false;
+		if (params.background !== undefined) {
+			PreviewScene.setBackgroundVisible(params.background !== false);
+		}
 		if (enabled && params.scene) await selectPreviewScene(params.scene);
 		let applied = setMaterialViewMode(enabled, params.scene);
 		return {enabled: applied, view_mode: Project ? Project.view_mode : null};
@@ -946,21 +952,57 @@ const BridgeMethods = {
 		return {animations: compileProjectAnimations()};
 	},
 	// params: {crop: true, width, height, plain: true}
-	// `plain` (the default) takes the model alone: the material view's scene
-	// fills the whole frame — nothing transparent left for the crop to trim —
-	// so it is switched off for the shot and back on right after, all within
-	// one frame, never painted.
+	// A picture of the viewport as it stands, cropped to the model.
+	//
+	// It used to switch the material view off for the shot, only to get a
+	// transparent frame for the crop to trim — and that quietly changed what
+	// was in the picture. Without the material view the model falls back to
+	// whatever texture is *selected*, so a save made while painting the MER
+	// map saved a picture of the MER map. Nothing about the view is touched
+	// now: the scene's sky is left undrawn for the length of the shot, which
+	// is all the transparency the crop needed.
+	//
+	// Two things are put right first. Every part the user folded away is
+	// turned back on — a mob is saved whole, whichever parts were in the way
+	// while working — and the grid over the model goes, along with the rest
+	// of the gizmos, which screenshotPreview already handles.
+	//
+	// `plain: false` asks for the frame exactly as it is on screen, sky and
+	// hidden parts included.
 	getScreenshot(params = {}) {
 		return new Promise(resolve => {
 			if (!Project) throw new Error('No open project');
-			let scene = params.plain !== false && Project.view_mode == 'material'
-				? ((PreviewScene.active && PreviewScene.active.id) || 'studio')
-				: null;
-			if (scene) setMaterialViewMode(false);
-			Screencam.screenshotPreview(Preview.selected, {crop: params.crop !== false, width: params.width, height: params.height}, data => {
-				if (scene) setMaterialViewMode(true, scene);
-				resolve({data});
-			});
+			let plain = params.plain !== false;
+			let background_before = PreviewScene.show_background;
+			let hidden_meshes = [];
+			if (plain) {
+				if (PreviewScene.active) PreviewScene.setBackgroundVisible(false);
+				// Only the meshes are shown, never `element.visibility` —
+				// that one is the project's own data, and is saved with it.
+				let nodes = [...Outliner.elements];
+				if (typeof Group != 'undefined' && Group.all) nodes.push(...Group.all);
+				for (let node of nodes) {
+					if (node.mesh && node.mesh.visible === false) {
+						hidden_meshes.push(node.mesh);
+						node.mesh.visible = true;
+					}
+				}
+			}
+			function restore() {
+				for (let mesh of hidden_meshes) mesh.visible = false;
+				if (plain && PreviewScene.active) {
+					PreviewScene.setBackgroundVisible(background_before);
+				}
+			}
+			try {
+				Screencam.screenshotPreview(Preview.selected, {crop: params.crop !== false, width: params.width, height: params.height}, data => {
+					restore();
+					resolve({data});
+				});
+			} catch (err) {
+				restore();
+				throw err;
+			}
 		});
 	},
 	markSaved(params = {}) {
@@ -1172,6 +1214,31 @@ function applyEmbeddedTweaks() {
 	// where every dialog is hidden, nobody could answer it: the scene would
 	// never load.
 	if (window.MinecraftEULA) MinecraftEULA.promptUser = async () => true;
+	// Desktop Blockbench aims at 144 frames a second. A phone's WebView is
+	// composited at 60, so every frame past that is drawn and thrown away —
+	// and the heat it costs comes back as throttling a minute later. Set
+	// before the early return below, so the second pass catches it once the
+	// settings exist.
+	if (typeof settings != 'undefined' && settings.fps_limit && settings.fps_limit.value > 60) {
+		settings.fps_limit.set(60);
+	}
+	// Blockbench draws a grid over every texel of the model in paint mode. On
+	// a mob it is noise — the model is the picture, not a canvas — so it is
+	// off unless the user asks for it from the toolbar. Set here rather than
+	// only as the setting's default, because settings are written to storage
+	// as a block: an install that saved one saved them all, the old default
+	// included.
+	if (typeof settings != 'undefined' && settings.painting_grid && settings.painting_grid.value) {
+		settings.painting_grid.set(false);
+		// A toggle bound to a setting only re-reads it when the settings
+		// dialog saves, so the toolbar button is told as well — otherwise it
+		// sits there looking pressed with no grid behind it.
+		let toggle = typeof BarItems != 'undefined' && BarItems.painting_grid;
+		if (toggle && toggle.value) {
+			toggle.value = false;
+			toggle.updateEnabledState();
+		}
+	}
 	// `?preview=1` strips the editor down to the bare viewport
 	if (Blockbench.queries && Blockbench.queries.preview && !preview_mode) {
 		applyPreviewChrome(true);

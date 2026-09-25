@@ -42,7 +42,6 @@
 		color: var(--color-text);
 	}
 	body {
-		background-image: url('../assets/logo_cutout.svg');
 		background-repeat: no-repeat;
 		background-size: 128px;
 		background-position: center;
@@ -840,7 +839,6 @@
 		background-color: var(--color-ui);
 		border: 3px solid var(--color-frame);
 		box-shadow: 1px 1px 10px rgb(0 0 0 / 40%);
-		background-image: url('../assets/logo_cutout.svg');
 		background-position: center 48px;
 		background-size: 40px;
 		background-repeat: no-repeat;

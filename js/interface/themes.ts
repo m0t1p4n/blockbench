@@ -46,7 +46,7 @@ const DEFAULT_COLORS = {
 	elevated: '#272a31',
 	button: '#33383f',
 	bright_ui: '#f4f3ff',
-	accent: '#3e90ff',
+	accent: '#5DA043',
 	frame: '#0f1012',
 	text: '#cacad4',
 	light: '#f4f3ff',

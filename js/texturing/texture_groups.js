@@ -103,9 +103,13 @@ export class TextureGroup {
 			fitMaterialToLightRig(material);
 		}
 
-		if (PreviewScene.active) {
-			const g = new THREE.PMREMGenerator(Preview.selected.renderer);
-			material.envMap = g.fromScene(Canvas.scene, 0.0, 100, 1024).texture;
+		// The scene's own prefiltered sky, baked once and shared by every
+		// material — not one bake per material per edit.
+		if (PreviewScene.active && Preview.selected) {
+			material.envMap = PreviewScene.active.getEnvironmentMap(Preview.selected.renderer);
+			// Each scene is reflected at its own strength, so a dark one can be
+			// turned up without the daylight one washing the model out.
+			material.envMapIntensity = materialEnvironmentIntensity();
 		}
 
 		let textures = this.getTextures();
@@ -205,6 +209,7 @@ export class TextureGroup {
 
 				ctx.putImageData(source_channel === 1 ? extractEmissiveChannel() : extractGrayscaleValue(source_channel), 0, 0);
 
+				material[key]?.dispose();
 				material[key] = new THREE.Texture(canvas, THREE.UVMapping, THREE.RepeatWrapping, THREE.RepeatWrapping, THREE.NearestFilter, THREE.NearestFilter);
 				material[key].needsUpdate = true;
 			}

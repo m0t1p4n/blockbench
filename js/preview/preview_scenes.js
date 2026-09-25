@@ -14,6 +14,8 @@ export class PreviewScene {
 		this.category = data.category || 'generic';
 
 		this.light_color = {r: 1, g: 1, b: 1};
+		// How hard the material view reflects this scene, over its own setting.
+		this.environment_intensity = 1;
 		this.light_side = 0;
 		this.condition;
 		this.fov = null;
@@ -37,11 +39,16 @@ export class PreviewScene {
 			this.description = tl('action.'+this.id+'.desc', [], '');
 		}
 		if (data.light_color) this.light_color = data.light_color;
+		if (data.environment_intensity) this.environment_intensity = data.environment_intensity;
 		if (data.light_side) this.light_side = data.light_side;
 		this.condition = data.condition;
 
+		this.disposeEnvironmentMap();
 		this.cubemap = null;
-		if (data.cubemap) {
+		if (data.cubemap instanceof THREE.CubeTexture) {
+			// Already a sky — drawn in code, not loaded from six files.
+			this.cubemap = data.cubemap;
+		} else if (data.cubemap) {
 			let urls = data.cubemap;
 			let texture_cube = new THREE.CubeTextureLoader().load(urls, () => {
 				if (PreviewScene.active == this && Project.view_mode == 'material') {
@@ -112,7 +119,7 @@ export class PreviewScene {
 
 		Canvas.global_light_color.copy(this.light_color);
 		Canvas.global_light_side = this.light_side;
-		Canvas.scene.background = this.cubemap;
+		Canvas.scene.background = PreviewScene.show_background ? this.cubemap : null;
 		Canvas.scene.fog = this.fog;
 
 		if (this.fov && !(Modes.display && DisplayMode.display_slot.startsWith('firstperson'))) {
@@ -145,13 +152,60 @@ export class PreviewScene {
 		Canvas.updateShading();
 		PreviewScene.active = null;
 	}
+	// What the material view reflects: this scene's sky, prefiltered into the
+	// mip chain a rough surface reads its reflection from.
+	//
+	// It used to be baked per material and rebaked on every edit that touched
+	// a texture — six scene renders plus a stack of blur passes each time, and
+	// the render target was dropped rather than freed, so a painting session
+	// leaked one per stroke. Here it is baked once per sky, and off the
+	// skybox itself rather than off a render of the scene: the old bake set a
+	// near plane of 100 units, well past a model 32 units tall, so all it ever
+	// captured was the sky anyway.
+	getEnvironmentMap(renderer) {
+		// version stays 0 until the six faces are decoded; the loader calls
+		// updateShading once they are, which comes back through here.
+		if (!renderer || !this.cubemap || !this.cubemap.version) return null;
+		if (this.environment_map && this.environment_version === this.cubemap.version) {
+			return this.environment_map;
+		}
+		this.disposeEnvironmentMap();
+		let generator = new THREE.PMREMGenerator(renderer);
+		this.environment_target = generator.fromCubemap(this.cubemap);
+		this.environment_map = this.environment_target.texture;
+		this.environment_version = this.cubemap.version;
+		generator.dispose();
+		return this.environment_map;
+	}
+	disposeEnvironmentMap() {
+		if (this.environment_target) this.environment_target.dispose();
+		this.environment_target = null;
+		this.environment_map = null;
+		this.environment_version = 0;
+	}
 	delete() {
+		this.disposeEnvironmentMap();
 		delete PreviewScene.scenes[this.id];
 		delete PreviewScene.menu_categories[this.category][this.id];
 	}
 }
 PreviewScene.scenes = {};
 PreviewScene.active = null;
+// Whether the active scene's sky is drawn behind the model.
+//
+// A scene is two things at once: a backdrop, and the light a metal or smooth
+// surface mirrors. Turning it off would take both, so the editor asks for the
+// sky to be left undrawn instead — the model keeps its reflections, and what
+// shows behind it is the viewport's own backdrop. It is also a full screen of
+// fragments that stops being drawn.
+PreviewScene.show_background = true;
+PreviewScene.setBackgroundVisible = function(visible) {
+	PreviewScene.show_background = visible !== false;
+	if (!PreviewScene.active) return;
+	Canvas.scene.background = PreviewScene.show_background
+		? PreviewScene.active.cubemap
+		: null;
+};
 PreviewScene.select_options = {};
 PreviewScene.source_repository = 'https://cdn.jsdelivr.net/gh/JannisX11/blockbench-scenes';
 PreviewScene.menu_categories = {
@@ -437,6 +491,85 @@ new PreviewScene('sky', {
 new PreviewScene('space', {
 	category: 'realistic',
 	web_config: 'realistic/space/space.json',
+});
+// A sunset sky, drawn rather than shipped.
+//
+// The material view reflects whatever the scene is, and the first attempt at
+// this got it backwards: an environment that is dark everywhere leaves nothing
+// to reflect, so metal went matte and the shine disappeared. What a reflection
+// needs is not darkness but *contrast* — somewhere near black to keep the mob
+// its own colour, and somewhere near white for it to catch.
+//
+// A sunset is exactly that shape, which is why it is the light photographers
+// go out for: the ground and most of the sky sit low, and a narrow band at the
+// horizon runs almost to white, with the sun brighter still on one side. A
+// smooth or metallic texel sweeps through that band as the model turns and
+// lights up; a rough one averages the whole sky and stays dark, which is what
+// roughness is supposed to do.
+//
+// Six canvases, so there is nothing to ship and nothing to download — the
+// material view prefilters the sky into a blurred map anyway, and this is
+// drawn at more resolution than that map keeps.
+function drawSunsetSky() {
+	const SIZE = 128;
+	function face(paint) {
+		let canvas = document.createElement('canvas');
+		canvas.width = canvas.height = SIZE;
+		paint(canvas.getContext('2d'), canvas);
+		return canvas;
+	}
+	let flat = colour => face(ctx => {
+		ctx.fillStyle = colour;
+		ctx.fillRect(0, 0, SIZE, SIZE);
+	});
+	// A cube's four side faces all stand upright, so one gradient serves them
+	// all: the middle row of a face is the horizon.
+	function paintWall(ctx) {
+		let gradient = ctx.createLinearGradient(0, 0, 0, SIZE);
+		gradient.addColorStop(0, '#141b29');		// deep sky, straight up
+		gradient.addColorStop(0.34, '#25314a');
+		gradient.addColorStop(0.44, '#7c5f6b');		// dusk
+		gradient.addColorStop(0.485, '#ffb45e');	// the warm run-up
+		gradient.addColorStop(0.5, '#fff3da');		// the band, near white
+		gradient.addColorStop(0.515, '#c98a4a');
+		gradient.addColorStop(0.58, '#2a2118');
+		gradient.addColorStop(1, '#0d0f13');		// ground
+		ctx.fillStyle = gradient;
+		ctx.fillRect(0, 0, SIZE, SIZE);
+	}
+	let wall = face(paintWall);
+	// The sun sits on one wall only. A band that runs all the way round is the
+	// same from every angle, so orbiting the model would not move the highlight
+	// and it would read as a tint; one bright spot makes it slide.
+	let sun = face(ctx => {
+		paintWall(ctx);
+		let glow = ctx.createRadialGradient(
+			SIZE * 0.5, SIZE * 0.47, 0,
+			SIZE * 0.5, SIZE * 0.47, SIZE * 0.17
+		);
+		glow.addColorStop(0, '#ffffff');
+		glow.addColorStop(0.45, 'rgba(255, 244, 214, 0.85)');
+		glow.addColorStop(1, 'rgba(255, 180, 94, 0)');
+		ctx.fillStyle = glow;
+		ctx.fillRect(0, 0, SIZE, SIZE);
+	});
+	// px, nx, py, ny, pz, nz
+	let texture = new THREE.CubeTexture([sun, wall, flat('#141b29'), flat('#0d0f13'), wall, wall]);
+	texture.needsUpdate = true;
+	return texture;
+}
+// What the editor reflects. The model is being worked on there, not shown off,
+// and this sky is never drawn behind it (`background: false` over the bridge)
+// — all the scene is, is the light on the model.
+//
+// It reflects harder than the daylight field does (environment_intensity):
+// most of it is dark, so turning it up brightens the band and the sun far more
+// than it brightens the model.
+new PreviewScene('dark_studio', {
+	name: 'Sunset Studio',
+	category: 'generic',
+	cubemap: drawSunsetSky(),
+	environment_intensity: 1.6,
 });
 // Ships with the build (assets/preview_scenes/), so it is there offline and
 // opens without a round trip to the scene repository — it is the scene the

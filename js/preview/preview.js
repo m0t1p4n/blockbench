@@ -14,6 +14,28 @@ window.Sun = null;
 window.lights = null;
 
 var framespersecond = 0;
+
+// A ceiling on how many pixels a viewport is drawn at, per CSS pixel, or null
+// for none — which is what it is set to: the viewport draws at the device's
+// own ratio, at full sharpness.
+//
+// It stays here as one number because it is the single biggest lever on the
+// fragment cost, and the one to reach for if the editor drags again. A phone
+// reports a ratio of 3 or more, so a viewport 400 CSS pixels wide becomes a
+// 1200-pixel frame — nine times the pixels of a 1:1 one, every one of them
+// through the material view's shader. That is why zooming in on a mob slows
+// down: the model covers more of those pixels, and nothing else about the
+// frame changed. A ceiling of 2 draws four ninths of them, a little over half
+// the work, and still a retina-grade frame.
+const MAX_PIXEL_RATIO = null;
+// What the renderer actually draws at. Everything that converts between the
+// canvas buffer and CSS pixels — picking, the selection rectangle — has to
+// read it from here too, or it lands off by the difference.
+function getPixelRatio() {
+	if (!MAX_PIXEL_RATIO) return window.devicePixelRatio;
+	return Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO);
+}
+
 const canvas_scenes = {};
 export const three_grid = new THREE.Object3D();
 export const gizmo_colors = {
@@ -303,7 +325,18 @@ export class Preview {
 				canvas: this.canvas,
 				antialias: typeof options.antialias == 'boolean' ? options.antialias : Settings.get('antialiasing'),
 				alpha: true,
-				preserveDrawingBuffer: true
+				// Asking to keep the drawing buffer is what costs the
+				// antialiasing: a mobile GPU draws a frame in tiles and throws
+				// each one away as it is written out, and a browser that has
+				// promised the buffer will still be readable next frame keeps
+				// a full copy instead — which several Android drivers pay for
+				// by silently refusing the multisampled context, so `antialias:
+				// true` comes back as a context with none. Every readback here
+				// renders and reads in the same turn (Screencam.screenshotPreview,
+				// the GIF recorder, the render dialog all call render() on the
+				// line above the toDataURL), which is exactly the case that
+				// needs no preserved buffer.
+				preserveDrawingBuffer: false
 			});
 		} catch (err) {
 			let error_element = document.querySelector('#loading_error_detail')
@@ -408,7 +441,7 @@ export class Preview {
 		this.renderer.setSize(this.width, this.height);
 
 		if (this.canvas.isConnected) {
-			this.renderer.setPixelRatio(window.devicePixelRatio);
+			this.renderer.setPixelRatio(getPixelRatio());
 			if (window.Transformer) {
 				Transformer.update()
 			}
@@ -1377,7 +1410,7 @@ export class Preview {
 	
 		vector.x = ( vector.x * widthHalf ) + widthHalf;
 		vector.y = - ( vector.y * heightHalf ) + heightHalf;
-		vector.divideScalar(window.devicePixelRatio);
+		vector.divideScalar(getPixelRatio());
 	
 		return { 
 			x: vector.x,
@@ -1494,8 +1527,8 @@ export class Preview {
 		let selection_mode = BarItems.selection_mode.value;
 		let spline_selection_mode = BarItems.spline_selection_mode.value;
 
-		let widthHalf = 0.5 * this.canvas.width / window.devicePixelRatio;
-		let heightHalf = 0.5 * this.canvas.height / window.devicePixelRatio;
+		let widthHalf = 0.5 * this.canvas.width / getPixelRatio();
+		let heightHalf = 0.5 * this.canvas.height / getPixelRatio();
 
 		function projectPoint(vector) {
 			vector.project(scope.camera);
@@ -2259,71 +2292,110 @@ export function animate() {
 	Blockbench.dispatchEvent('render_frame');
 }
 
-// The material view's lights. One light shows a MER map poorly: metal only
-// catches a highlight on the faces turned towards it, and every side turned
-// away goes flat. This is a studio of small, hard lights set around the model
-// instead — a sun above it to the left, a glint light beside the camera, a
-// rim on either side behind it and the sky above — and it turns with the
-// camera, so whichever side the viewer orbits to is lit the same way, and
-// metal, glow and roughness read on all of them. The sun shapes the model;
-// the glint light is the one that puts a highlight on a face turned to the
-// viewer — a block's or an item's texture — which the sun, off to the side,
-// would miss.
+// The material view is lit by two lights, and only two.
 //
-// They are point lights standing as far from the model as the camera.
-// Directional light falls on a flat face evenly and shows no shine on it at
-// all; from a point, each texel sees the light from its own angle, so the
-// highlight lands as a spot that slides over the face as it turns.
-//   azimuth: degrees around the model from the camera, positive to its right
-//   elevation: degrees above the horizon
-const MATERIAL_LIGHT_RIG = [
-	{azimuth: -50, elevation: 45, intensity: 0.85},		// sun
-	{azimuth: 15, elevation: 10, intensity: 0.2},		// glint
-	{azimuth: -140, elevation: 25, intensity: 0.35},	// rim
-	{azimuth: 140, elevation: 25, intensity: 0.35},		// rim
-	{azimuth: 0, elevation: 80, intensity: 0.08},		// sky
-];
-// How big the lights are. A three.js light has no size, so the spread of the
+// Bedrock's own Vibrant Visuals shades a surface with a directional light —
+// the sun — on top of ambient occlusion and face dimming, not with a rig of
+// lamps, so this follows it. The fill (MATERIAL_AMBIENT) lights the model
+// from every side at once, so no part of a mob falls into shadow; the sun
+// (MATERIAL_SUN) is there for the shine the MER map carries, because only a
+// direct light leaves a highlight, and under a perspective camera that
+// highlight slides across a face as the model turns — which is what reads as
+// metal and smoothness.
+//
+// There used to be five point lights here, then one. Every direct light is
+// unrolled into the physical shader and costs a full GGX + Smith + Schlick on
+// every pixel the model covers, every frame. That is the cost a weak phone
+// feels most when the model is zoomed in and fills the viewport, and it is
+// why the count stays at one: the fill is indirect light, and costs a single
+// add.
+//
+// The sun stands relative to the camera, so whichever side the viewer orbits
+// to is the lit one: azimuth is degrees around the model, positive to its
+// right, elevation degrees above the horizon.
+const MATERIAL_SUN_AZIMUTH = -35;
+const MATERIAL_SUN_ELEVATION = 40;
+// How strong the sun is. It only shapes the model and lands the glint — the
+// fill below carries the light — so it stays low, or a mob reads bleached.
+const MATERIAL_SUN = 0.45;
+// The even light from every side: no direction, no highlight and no dark
+// side, which is most of what a mob is lit by. Raise this and the whole model
+// brightens flatly; raise MATERIAL_SUN and the lit side and its glint do.
+const MATERIAL_AMBIENT = 0.6;
+// How big the sun is. A three.js light has no size, so the spread of the
 // highlight it leaves is the surface's roughness alone — and at vanilla's
-// usual 0.4 to 0.7 that smears one light across a whole face, like a big soft
-// lamp. The roughness the lights see is scaled down, which makes them small,
-// hard sources: each lands like a ray, as a tight glint, and a smooth texel
-// still reads sharper than a rough one. What the scene reflects keeps the
-// map's own roughness.
+// usual 0.4 to 0.7 that smears it across a whole face, like a big soft lamp.
+// The roughness the sun sees is scaled down, which makes it a small, hard
+// source: it lands like a ray, as a tight glint, and a smooth texel still
+// reads sharper than a rough one. What the scene reflects keeps the map's own
+// roughness.
 const MATERIAL_LIGHT_SIZE = 0.35;
-// The scene's sky lights the model from every direction at once — the
-// biggest, softest light there is, which spreads over the whole model.
-// Turned down, it still gives metal something to mirror, while the rig's
-// small lights shape the model and put the glints on it.
-const MATERIAL_ENVIRONMENT = 0.65;
-// An even light over the whole model, so the sides the rig's lights miss
-// don't go dark. It leaves no highlight, so the lights stay small.
-const MATERIAL_AMBIENT = 0.35;
-// How much of that light metal takes the way the rest of the model does. A
-// metal only mirrors, so it would take the rig's small lights as glints and
-// nothing more — armor, which vanilla maps three-quarters metal, drew at half
-// the light a mob does, and read dark. Metal takes the light as a matte
-// surface of its colour would, its shine on top.
-const MATERIAL_METAL_FILL = 1;
-const material_lights = MATERIAL_LIGHT_RIG.map(() => new THREE.PointLight());
+// How much the scene lights the model — its sky standing in for the sky a mob
+// stands under. It scales everything the environment does, the reflection
+// included, so it is the fill, not the mirror.
+const MATERIAL_ENVIRONMENT = 0.6;
+// How much brighter the mirrored reflection is than that fill.
+//
+// This is what makes a metal look like metal. Bedrock's own recipe for a
+// mirror is metalness 1 and roughness 0 — "will render the block like
+// reflective metal" — and what a mirror shows is the world around it, at the
+// strength it is really there. Scaling the reflection with the fill meant the
+// two could not be set apart: enough reflection to see the scene in a mob
+// meant a mob lit like noon. This multiplies only the mirrored part, which
+// the shader keeps separately (`radiance`) from the environment's flat light
+// (`iblIrradiance`).
+//
+// It lands almost entirely on metal and on smooth texels: a matte dielectric
+// reflects four percent of it, a metal reflects its own colour's worth. Which
+// is exactly the control the MER map is supposed to have.
+const MATERIAL_REFLECTION = 2.4;
+// How much of the fill a metal takes the way the rest of the model does.
+//
+// Zero, because a metal has no diffuse — it only mirrors, which is the whole
+// of what metalness means in the map. It used to be one, to keep armor from
+// reading dark, and that was the wrong fix: it handed a metal its own colour
+// back as flat paint, and flat paint over a mirror is what a mirror stops
+// looking like. Armor reads because there is now a scene bright enough to
+// mirror, not because the shader paints it in.
+const MATERIAL_METAL_FILL = 0;
+const material_sun = new THREE.DirectionalLight();
 
-// Sets a material view material up for the rig: how much of the scene it
-// reflects, how big it sees the lights (MATERIAL_LIGHT_SIZE) — the
-// roughness three.js hands the direct lights' highlight is scaled, the one
-// the reflection is read with is not — and how much light its metal takes
-// (MATERIAL_METAL_FILL).
+// Sets a material view material up for the two lights: how much of the scene
+// it reflects, how big it sees the sun (MATERIAL_LIGHT_SIZE) — the roughness
+// three.js hands the direct highlight is scaled, the one the reflection is
+// read with is not — and how much light its metal takes (MATERIAL_METAL_FILL).
+// How hard a material reflects the scene: the view's own setting, times what
+// the active scene asks for. A scene that is mostly dark says a number above
+// one, and it lands almost entirely on the bright part of its sky.
+export function materialEnvironmentIntensity() {
+	let scene = typeof PreviewScene != 'undefined' ? PreviewScene.active : null;
+	return MATERIAL_ENVIRONMENT * ((scene && scene.environment_intensity) || 1);
+}
+
 export function fitMaterialToLightRig(material) {
-	material.envMapIntensity = MATERIAL_ENVIRONMENT;
+	material.envMapIntensity = materialEnvironmentIntensity();
 	material.onBeforeCompile = shader => {
+		if (MATERIAL_METAL_FILL) {
+			shader.fragmentShader = shader.fragmentShader.replace(
+				'#include <lights_physical_fragment>',
+				`#include <lights_physical_fragment>
+				material.diffuseColor += diffuseColor.rgb * metalnessFactor * ${MATERIAL_METAL_FILL.toFixed(2)};`
+			);
+		}
+		// `radiance` is what the surface mirrors; the chunk above it fills it
+		// from the prefiltered sky, and nothing else in the shader touches it.
+		if (!shader.fragmentShader.includes('#include <lights_fragment_maps>')) {
+			console.warn('fitMaterialToLightRig: three.js changed its indirect light, the reflection keeps its strength');
+		}
 		shader.fragmentShader = shader.fragmentShader.replace(
-			'#include <lights_physical_fragment>',
-			`#include <lights_physical_fragment>
-			material.diffuseColor += diffuseColor.rgb * metalnessFactor * ${MATERIAL_METAL_FILL.toFixed(2)};`
+			'#include <lights_fragment_maps>',
+			`#include <lights_fragment_maps>
+			radiance *= ${MATERIAL_REFLECTION.toFixed(2)};`
 		);
 		let target = 'material.specularColor, material.specularRoughness)';
 		let chunk = THREE.ShaderChunk.lights_physical_pars_fragment;
 		if (!chunk.includes(target)) {
-			return console.warn('fitMaterialToLightRig: three.js changed its direct light, the lights keep their size');
+			return console.warn('fitMaterialToLightRig: three.js changed its direct light, the sun keeps its size');
 		}
 		shader.fragmentShader = shader.fragmentShader.replace(
 			'#include <lights_physical_pars_fragment>',
@@ -2333,32 +2405,39 @@ export function fitMaterialToLightRig(material) {
 }
 
 function updateMaterialLights(enabled, brightness) {
-	material_lights.forEach((light, i) => {
-		if (!enabled) return Canvas.scene.remove(light);
-		light.color.copy(Canvas.global_light_color);
-		light.intensity = MATERIAL_LIGHT_RIG[i].intensity * brightness;
-		Canvas.scene.add(light);
-	});
-	if (enabled && Preview.selected) aimMaterialLights(Preview.selected);
+	if (!enabled) {
+		Canvas.scene.remove(material_sun);
+		Canvas.scene.remove(material_sun.target);
+		return;
+	}
+	material_sun.color.copy(Canvas.global_light_color);
+	material_sun.intensity = MATERIAL_SUN * brightness;
+	Canvas.scene.add(material_sun);
+	// A directional light is aimed at its target, and three.js only reads that
+	// target's world matrix if it is in the scene too.
+	Canvas.scene.add(material_sun.target);
+	if (Preview.selected) aimMaterialLights(Preview.selected);
 }
 
-// Swings the rig round to the camera. Runs every frame, and only follows the
-// camera around the vertical axis: the sky stays above.
+// Swings the sun round to the camera, so the side the viewer orbits to is the
+// lit one and the glint stays where they can see it. Runs every frame, and
+// only follows the camera around the vertical axis: the sun stays up.
+//
+// A directional light is aimed, not placed — it has no distance and no
+// falloff to compute per pixel — so this is a unit vector off the model.
 function aimMaterialLights(preview) {
-	if (!material_lights[0].parent || !preview.controls) return;
+	if (!material_sun.parent || !preview.controls) return;
 	let {position} = preview.camera;
 	let {target} = preview.controls;
 	let yaw = Math.atan2(position.x - target.x, position.z - target.z);
-	let distance = position.distanceTo(target);
-	material_lights.forEach((light, i) => {
-		let azimuth = yaw + Math.degToRad(MATERIAL_LIGHT_RIG[i].azimuth);
-		let elevation = Math.degToRad(MATERIAL_LIGHT_RIG[i].elevation);
-		light.position.set(
-			Math.sin(azimuth) * Math.cos(elevation),
-			Math.sin(elevation),
-			Math.cos(azimuth) * Math.cos(elevation)
-		).multiplyScalar(distance).add(target);
-	});
+	let azimuth = yaw + Math.degToRad(MATERIAL_SUN_AZIMUTH);
+	let elevation = Math.degToRad(MATERIAL_SUN_ELEVATION);
+	material_sun.target.position.copy(target);
+	material_sun.position.set(
+		Math.sin(azimuth) * Math.cos(elevation),
+		Math.sin(elevation),
+		Math.cos(azimuth) * Math.cos(elevation)
+	).add(target);
 }
 
 export function updateShading() {
@@ -2732,8 +2811,16 @@ function setMaterialViewMode(enabled, scene_id = material_view_scene) {
 		PreviewScene.active.unselect();
 	}
 	Project.view_mode = enabled ? 'material' : 'textured';
-	if (BarItems.view_mode) BarItems.view_mode.value = Project.view_mode;
-	if (BarItems.toggle_material_view) BarItems.toggle_material_view.value = !!enabled;
+	// Both of these have to be told, not just written to: a bar item paints
+	// its own state, and assigning `value` behind its back left the Vibrant
+	// Visuals button looking switched off while the view was on. `set` on a
+	// select and `updateEnabledState` on a toggle repaint without calling the
+	// item's own onChange, which would land back in here.
+	if (BarItems.view_mode) BarItems.view_mode.set(Project.view_mode);
+	if (BarItems.toggle_material_view) {
+		BarItems.toggle_material_view.value = !!enabled;
+		BarItems.toggle_material_view.updateEnabledState();
+	}
 	// The materials are built against the active scene's environment map, so
 	// they have to be rebuilt once it changed.
 	for (let group of TextureGroup.all) {
@@ -2746,6 +2833,8 @@ function setMaterialViewMode(enabled, scene_id = material_view_scene) {
 Object.assign(window, {
 	scene,
 	Sun,
+	getPixelRatio,
+	materialEnvironmentIntensity,
 	setMaterialViewMode,
 	fitMaterialToLightRig,
 	three_grid,
