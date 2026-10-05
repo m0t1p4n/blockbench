@@ -1137,7 +1137,7 @@ export const UVEditor = {
 				}
 			})
 			obj.autouv = 0;
-			obj.preview_controller.updateUV(obj);;
+			obj.preview_controller.updateUV(obj);
 		})
 		this.message('uv_editor.turned');
 		this.loadData();
@@ -1592,7 +1592,7 @@ export const UVEditor = {
 				this.getSelectedFaces(obj).forEach(face => {
 					obj.faces[face].rotation = value;
 				})
-				obj.preview_controller.updateUV(obj);;
+				obj.preview_controller.updateUV(obj);
 			})
 		}
 		let rect = this.vue.getSelectedUVBoundingBox();
@@ -2532,9 +2532,9 @@ BARS.defineActions(function() {
 					let face = mesh.faces[fkey];
 					if (!face || face == face1) return;
 					face.vertices.forEach(vkey => {
-						if (!face.uv[vkey]) return;;
-						face.uv[vkey][0] = face.uv[vkey][0];
-						face.uv[vkey][1] = face.uv[vkey][1];
+						if (!face.uv[vkey]) return;
+						face.uv[vkey][0] = face.uv[vkey][0] + offset[0];
+						face.uv[vkey][1] = face.uv[vkey][1] + offset[1];
 						if (UVEditor.isUVClamped()) {
 							face.uv[vkey][0] = Math.clamp(face.uv[vkey][0], 0, Project.texture_width);
 							face.uv[vkey][1] = Math.clamp(face.uv[vkey][1], 0, Project.texture_height);

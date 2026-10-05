@@ -860,6 +860,9 @@ export class NullObjectAnimator extends BoneAnimator {
 		let target = [...Group.all, ...ArmatureBone.all, ...Locator.all].find(node => node.uuid == null_object.ik_target);
 		if (!null_object || !target) return;
 
+		// Disable IK if null object has no keyframes
+		if (this.keyframes.length == 0) return;
+
 		let bones = [];
 		let ik_target = new THREE.Vector3().copy(null_object.getWorldCenter(true));
 		let bone_references = [];

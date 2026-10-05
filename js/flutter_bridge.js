@@ -256,14 +256,31 @@ function textureChannelsOf(value) {
 // texture's size in its own handler is what says the real file arrived.
 function waitForTextureLoad(texture) {
 	return new Promise(resolve => {
-		let attempts = 0;
+		let started = performance.now();
 		(function check() {
+			let waited = performance.now() - started;
 			// 5s cap: a broken texture must never hang the model load.
-			if (!texture || (texture.width && texture.height) || ++attempts > 200) {
+			if (!texture || (texture.width && texture.height) || waited > 5000) {
 				return resolve();
 			}
-			setTimeout(check, 25);
+			// A small bitmap decodes within a millisecond or two, and a timer
+			// cannot fire sooner than four: the first stretch is watched task
+			// by task, so a run of thumbnails doesn't spend most of its time
+			// waiting out the poll. After that the slow poll is plenty.
+			if (waited < 30) nextTask().then(check);
+			else setTimeout(check, waited < 200 ? 4 : 25);
 		})();
+	});
+}
+
+// Resolves on the next turn of the event loop — after whatever was queued
+// before it (an image's load handler, say), and without a timer's minimum
+// delay.
+function nextTask() {
+	return new Promise(resolve => {
+		let channel = new MessageChannel();
+		channel.port1.onmessage = () => resolve();
+		channel.port2.postMessage(0);
 	});
 }
 
@@ -436,20 +453,33 @@ const PREVIEW_STYLE = `
 	}
 `;
 
+// The part of stripPreviewDecorations a picture depends on: the helper
+// elements themselves. Returns whether there was any to hide.
+function hidePreviewHelpers() {
+	if (!preview_mode || !Project) return false;
+	Canvas.show_gizmos = false;
+	let hidden = false;
+	Outliner.elements.forEach(element => {
+		let is_helper = element instanceof Locator ||
+			(element.getTypeBehavior && element.getTypeBehavior('hide_in_screenshot'));
+		// The element's own visibility flag is what the preview controllers
+		// read back, so it survives every canvas refresh.
+		if (is_helper && element.visibility !== false) {
+			element.visibility = false;
+			hidden = true;
+		}
+	});
+	if (hidden) Canvas.updateVisibility();
+	return hidden;
+}
+
 // Everything the editor paints on top of the model — transform gizmo, pivot
 // markers, locator anchors, bone helpers, selection outlines — is editing
 // furniture rather than part of the entity. Strip it whenever a model lands.
 function stripPreviewDecorations() {
 	if (!preview_mode || !Project) return;
 	try {
-		Canvas.show_gizmos = false;
-		Outliner.elements.forEach(element => {
-			let is_helper = element instanceof Locator ||
-				(element.getTypeBehavior && element.getTypeBehavior('hide_in_screenshot'));
-			// The element's own visibility flag is what the preview controllers
-			// read back, so it survives every canvas refresh.
-			if (is_helper) element.visibility = false;
-		});
+		hidePreviewHelpers();
 		unselectAllElements();
 		if (typeof Transformer != 'undefined') Transformer.detach();
 		Canvas.updateVisibility();
@@ -714,6 +744,273 @@ function pickPreviewAnimation() {
 	return Animation.all[0];
 }
 
+// --- Thumbnails -----------------------------------------------------------
+// A host list shows a picture of every model in it and asks for them one
+// after another. Opening each in a project of its own and closing it again
+// cost several times what drawing it did: the tab, the mode, the selection
+// and the undo history all turn over, and twice — closing the only project
+// brings the boot placeholder back, for the next load to retire. None of
+// that is in the picture. A run of thumbnails shares one project instead,
+// emptied and filled again for each model.
+let thumbnail_project = null;
+
+// The format the bedrock codec would open `model` in — a block and an entity
+// are different formats, and a project stays the one it was set up as. Kept
+// in step with Codecs.bedrock.load.
+function bedrockFormatOf(model, name) {
+	let is_block = Settings.get('default_bedrock_format') == 'block';
+	if (name.match(/[\\/]models[\\/]blocks[\\/]/)) {
+		is_block = true;
+	} else if (name.match(/[\\/]models[\\/]entity[\\/]/)) {
+		is_block = false;
+	}
+	if (model['minecraft:geometry']?.[0]?.item_display_transforms) is_block = true;
+	return is_block ? Formats.bedrock_block : Formats.bedrock;
+}
+
+// Takes everything out of the open project: its bones and cubes, its
+// textures, its materials. Nothing is recorded for undo — nobody edits a
+// project a thumbnail is drawn in.
+//
+// Removing an element frees its geometry; a texture only leaves the list,
+// and what it put on the GPU would stay there until the page goes. Over a
+// few hundred models that is a few hundred bitmaps, so they are freed here.
+function emptyProject() {
+	for (let node of Outliner.root.slice()) node.remove(false);
+	for (let element of Outliner.elements.slice()) element.remove();
+	for (let texture of Texture.all.slice()) {
+		texture.remove(true);
+		disposeMaterial(texture.material);
+	}
+	if (typeof TextureGroup != 'undefined') {
+		for (let group of TextureGroup.all.slice()) {
+			group.remove();
+			disposeMaterial(group._static?.properties?.material);
+		}
+	}
+}
+
+// The maps a material draws with that are its own. Not `envMap`: that one is
+// the scene's, shared by every material lit in it.
+const OWN_MATERIAL_MAPS = ['map', 'metalnessMap', 'emissiveMap', 'roughnessMap', 'normalMap', 'bumpMap', 'displacementMap', 'alphaMap'];
+
+function disposeMaterial(material) {
+	if (!material) return;
+	try {
+		for (let key of OWN_MATERIAL_MAPS) {
+			if (material[key] && typeof material[key].dispose == 'function') material[key].dispose();
+		}
+		if (typeof material.dispose == 'function') material.dispose();
+	} catch (err) {
+		console.warn('FlutterBridge: could not free a material', err);
+	}
+}
+
+// Puts `model` — one bedrock geometry — and its textures in the thumbnail
+// project in place of whatever it held, set up the way loadModel leaves a
+// model: material view, camera angle, framing.
+async function openInThumbnailProject(model, name, params, marks = {}) {
+	let mark_at = performance.now();
+	let mark = key => {
+		let now = performance.now();
+		marks[key] = +(now - mark_at).toFixed(2);
+		mark_at = now;
+	};
+	// Nearly every step below ends by refreshing the interface for the
+	// selection — toolbars, panels, the UV editor — and here there is no
+	// interface, and nothing selected. It is switched off for the stretches
+	// that run in one go, and back on before anything is awaited, so nothing
+	// else that runs in between goes without it.
+	let refresh = window.updateSelection;
+	function quietly(run) {
+		window.updateSelection = () => {};
+		try {
+			return run();
+		} finally {
+			window.updateSelection = refresh;
+		}
+	}
+
+	let format = bedrockFormatOf(model, name);
+	let project = thumbnail_project;
+	if (!project || !ModelProject.all.includes(project) || project.format !== format) {
+		if (project && ModelProject.all.includes(project)) await project.close(true);
+		setupProject(format);
+		thumbnail_project = project = Project;
+		// The boot placeholder is retired once a real project shows up, and
+		// closing it re-selects — wait that out before anything is put in.
+		await settlePlaceholder();
+		// The viewport may have been measured before the page was laid out.
+		requestPreviewResize();
+	}
+	if (Project !== project) project.select();
+	mark('project');
+
+	quietly(() => {
+		emptyProject();
+		// What the codec starts a project of its own on; the geometry's own
+		// description overrides it.
+		Project.texture_width = 16;
+		Project.texture_height = 16;
+		Codecs.bedrock.parse(model, name, {import_to_current_project: true});
+	});
+	mark('parse');
+
+	if (params.textures) {
+		for (let key in params.textures) {
+			let texture_name = key.split(/[\\\/]/).last();
+			if (!texture_name.includes('.')) texture_name += '.png';
+			await addTextureEntry(texture_name, params.textures[key]);
+		}
+	}
+	// The picture is taken in this same call: nothing else gives a bitmap
+	// the time to decode, and a model drawn before it has is drawn blank.
+	await Promise.all(Texture.all.map(waitForTextureLoad));
+	mark('textures');
+
+	quietly(() => {
+		if (Texture.all.length) Texture.all[0].select();
+		Canvas.updateAll();
+		hidePreviewHelpers();
+	});
+	project.saved = true;
+	mark('update');
+
+	if (params.material && TextureGroup.all.find(group => group.is_material)) {
+		let scene = params.preview_scene || 'minecraft_plains';
+		PreviewScene.setBackgroundVisible(params.background !== false);
+		await selectPreviewScene(scene);
+		setMaterialViewMode(true, scene);
+	} else if (Project.view_mode == 'material' || PreviewScene.active) {
+		// The model before this one was lit as a material in a scene; this
+		// one is a plain texture, drawn the way a project of its own draws it.
+		setMaterialViewMode(false);
+	}
+	// A project of its own opens on the default angle. Here the camera is
+	// where the last model left it — facing south, after a flat one.
+	Preview.selected.loadAnglePreset(DefaultCameraPresets[0]);
+	if (params.view == 'south') faceCameraSouth();
+	frameModelInView(PREVIEW_FRAME_MARGIN);
+	mark('view');
+}
+
+// Resolves once the viewport has a size to draw in. A WebView commonly lays
+// its page out after Blockbench measured it, and a picture taken of a
+// zero-sized canvas is a picture of nothing — which the host would keep as
+// the model's. Two seconds at most: a viewport that never gets a size is the
+// host's to notice.
+async function viewportHasSize() {
+	for (let attempt = 0; attempt < 80; attempt++) {
+		let canvas = Preview.selected && Preview.selected.canvas;
+		if (canvas && canvas.width > 1 && canvas.height > 1) return true;
+		requestPreviewResize();
+		await new Promise(resolve => setTimeout(resolve, 25));
+	}
+	return false;
+}
+
+// Makes the viewport ready for a picture and returns what puts it back.
+//
+// `plain` leaves the scene's sky undrawn — all the transparency a crop needs
+// — and turns every part the user folded away back on: a mob is pictured
+// whole, whichever parts were in the way while working. Only the meshes are
+// shown, never `element.visibility` — that one is the project's own data,
+// and is saved with it.
+function preparePlainShot(plain) {
+	let background_before = PreviewScene.show_background;
+	let hidden_meshes = [];
+	if (plain) {
+		if (PreviewScene.active) PreviewScene.setBackgroundVisible(false);
+		let nodes = [...Outliner.elements];
+		if (typeof Group != 'undefined' && Group.all) nodes.push(...Group.all);
+		for (let node of nodes) {
+			if (node.mesh && node.mesh.visible === false) {
+				hidden_meshes.push(node.mesh);
+				node.mesh.visible = true;
+			}
+		}
+	}
+	return function restore() {
+		for (let mesh of hidden_meshes) mesh.visible = false;
+		if (plain && PreviewScene.active) {
+			PreviewScene.setBackgroundVisible(background_before);
+		}
+	};
+}
+
+// The viewport as a picture cut down to the model — what
+// Screencam.screenshotPreview does with `crop`, made for a run of them.
+//
+// That one copies the frame onto a canvas the browser keeps on the GPU, reads
+// all of it back, walks every pixel of it for the model's edges, reads the
+// cut back a second time and writes it out again. Here the frame is copied
+// once, onto a canvas kept in memory; the rows are walked from the top and
+// from the bottom until one holds something, the columns only as far in as
+// the rows before them left open; and the cut is drawn straight across.
+//
+// `null` for a viewport with nothing in it.
+let thumbnail_frame = null;
+const ALPHA_MASK = new Uint8Array(new Uint32Array([0xff000000]).buffer)[3] == 0xff
+	? 0xff000000
+	: 0x000000ff;
+
+function croppedViewport(preview) {
+	let cut = null;
+	Canvas.withoutGizmos(() => {
+		preview.render();
+		let source = preview.canvas;
+		let width = source.width;
+		let height = source.height;
+		if (!width || !height) return;
+
+		if (!thumbnail_frame) thumbnail_frame = document.createElement('canvas');
+		let frame = thumbnail_frame;
+		if (frame.width != width || frame.height != height) {
+			frame.width = width;
+			frame.height = height;
+		}
+		let ctx = frame.getContext('2d', {willReadFrequently: true});
+		ctx.clearRect(0, 0, width, height);
+		ctx.drawImage(source, 0, 0);
+		let pixels = new Uint32Array(ctx.getImageData(0, 0, width, height).data.buffer);
+
+		let count = width * height;
+		let first = 0;
+		while (first < count && !(pixels[first] & ALPHA_MASK)) first++;
+		if (first == count) return;
+		let last = count - 1;
+		while (!(pixels[last] & ALPHA_MASK)) last--;
+		let top = Math.floor(first / width);
+		let bottom = Math.floor(last / width);
+		let left = width;
+		let right = -1;
+		for (let y = top; y <= bottom; y++) {
+			let row = y * width;
+			for (let x = 0; x < left; x++) {
+				if (pixels[row + x] & ALPHA_MASK) {
+					left = x;
+					break;
+				}
+			}
+			for (let x = width - 1; x > right; x--) {
+				if (pixels[row + x] & ALPHA_MASK) {
+					right = x;
+					break;
+				}
+			}
+		}
+
+		let cut_width = right - left + 1;
+		let cut_height = bottom - top + 1;
+		let canvas = document.createElement('canvas');
+		canvas.width = cut_width;
+		canvas.height = cut_height;
+		canvas.getContext('2d').drawImage(frame, left, top, cut_width, cut_height, 0, 0, cut_width, cut_height);
+		cut = canvas.toDataURL();
+	});
+	return cut;
+}
+
 const BridgeMethods = {
 	ping() {
 		return {
@@ -972,28 +1269,7 @@ const BridgeMethods = {
 	getScreenshot(params = {}) {
 		return new Promise(resolve => {
 			if (!Project) throw new Error('No open project');
-			let plain = params.plain !== false;
-			let background_before = PreviewScene.show_background;
-			let hidden_meshes = [];
-			if (plain) {
-				if (PreviewScene.active) PreviewScene.setBackgroundVisible(false);
-				// Only the meshes are shown, never `element.visibility` —
-				// that one is the project's own data, and is saved with it.
-				let nodes = [...Outliner.elements];
-				if (typeof Group != 'undefined' && Group.all) nodes.push(...Group.all);
-				for (let node of nodes) {
-					if (node.mesh && node.mesh.visible === false) {
-						hidden_meshes.push(node.mesh);
-						node.mesh.visible = true;
-					}
-				}
-			}
-			function restore() {
-				for (let mesh of hidden_meshes) mesh.visible = false;
-				if (plain && PreviewScene.active) {
-					PreviewScene.setBackgroundVisible(background_before);
-				}
-			}
+			let restore = preparePlainShot(params.plain !== false);
 			try {
 				Screencam.screenshotPreview(Preview.selected, {crop: params.crop !== false, width: params.width, height: params.height}, data => {
 					restore();
@@ -1004,6 +1280,55 @@ const BridgeMethods = {
 				throw err;
 			}
 		});
+	},
+	// A picture of a model, in one call: loadModel's params in, getScreenshot's
+	// result out — `{data: <png data URL>}`, cut down to the model, or
+	// `{data: null}` when nothing of it could be drawn. What a host's list of
+	// models is drawn from.
+	//
+	// A bedrock geometry goes through the thumbnail project (see above), which
+	// stays open for the next call. Anything else is opened, drawn and closed
+	// the long way round.
+	//
+	// params: loadModel's, plus {plain: true} as for getScreenshot, and
+	//   {profile: true} to get `marks` back — how long each step took, in ms.
+	async renderThumbnail(params = {}) {
+		if (typeof params.model != 'string' || !params.model.length) {
+			throw new Error('renderThumbnail: params.model must be the model file content as a string');
+		}
+		let name = params.name || 'model.json';
+		let model = autoParseJSON(params.model, {file_path: name});
+		if (!model) throw new Error('renderThumbnail: model content is not valid JSON');
+
+		let format = (!params.format || params.format == 'auto') ? detectFormat(name, model) : params.format;
+		let geometries = model['minecraft:geometry'];
+		// More than one geometry makes the codec ask which — never here.
+		let shares_project = format == 'bedrock' && geometries instanceof Array &&
+			geometries.length == 1 && geometries[0] && typeof geometries[0] == 'object' &&
+			!params.import_to_current_project;
+		if (!shares_project) {
+			await BridgeMethods.loadModel(params);
+			await Promise.all(Texture.all.map(waitForTextureLoad));
+			try {
+				return await BridgeMethods.getScreenshot({plain: params.plain});
+			} finally {
+				await BridgeMethods.closeProject({force: true});
+			}
+		}
+
+		let marks = {};
+		await openInThumbnailProject(model, name, params, marks);
+		await viewportHasSize();
+		let started = performance.now();
+		let restore = preparePlainShot(params.plain !== false);
+		let data;
+		try {
+			data = croppedViewport(Preview.selected);
+		} finally {
+			restore();
+		}
+		marks.shot = +(performance.now() - started).toFixed(2);
+		return params.profile ? {data, marks} : {data};
 	},
 	markSaved(params = {}) {
 		if (!Project) throw new Error('No open project');

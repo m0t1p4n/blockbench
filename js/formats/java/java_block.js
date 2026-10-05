@@ -576,62 +576,70 @@ var codec = new Codec('java_block', {
 
 		} else if (!model.elements && model.parent) {
 			let can_open = isApp && !model.parent.replace(/\w+:/, '').startsWith('builtin');
-			Blockbench.showMessageBox({
-				translateKey: 'child_model_only',
-				icon: 'info',
-				message: tl('message.child_model_only.message', [model.parent]),
-				commands: can_open && {
-					open: 'message.child_model_only.open',
-					open_with_textures: {text: 'message.child_model_only.open_with_textures', condition: Texture.all.length > 0}
-				}
-			}, async result => {
-				if (typeof result == 'string') {
-					let parent = model.parent.replace(/\w+:/, '');
-					let path_arr = path.split(osfs);
-					let index = path_arr.length - path_arr.indexOf('models');
-					path_arr.splice(-index);
-					path_arr.push('models', ...parent.split('/'));
-					let parent_path = path_arr.join(osfs) + '.json';
+			const showDialog = () => {
+				Blockbench.showMessageBox({
+					translateKey: 'child_model_only',
+					icon: 'info',
+					message: tl('message.child_model_only.message', [model.parent]),
+					commands: can_open && {
+						open: 'message.child_model_only.open',
+						open_with_textures: {text: 'message.child_model_only.open_with_textures', condition: Texture.all.length > 0}
+					}
+				}, async result => {
+					if (typeof result == 'string') {
+						let parent = model.parent.replace(/\w+:/, '');
+						let path_arr = path.split(osfs);
+						let index = path_arr.length - path_arr.indexOf('models');
+						path_arr.splice(-index);
+						path_arr.push('models', ...parent.split('/'));
+						let parent_path = path_arr.join(osfs) + '.json';
 
-					function loadParentModel(file) {
-						loadModelFile(file, args);
+						function loadParentModel(file) {
+							loadModelFile(file, args);
 
-						if (result == 'open_with_textures') {
-							Texture.all.forEachReverse(tex => {
-								if (tex.error == 3 && tex.name.startsWith('#')) {
-									let loaded_tex = texture_ids[tex.name.replace(/#/, '')];
-									if (loaded_tex) {
-										tex.fromPath(loaded_tex.path, args.externalDataLoader);
-										tex.namespace = loaded_tex.namespace;
+							if (result == 'open_with_textures') {
+								Texture.all.forEachReverse(tex => {
+									if (tex.error == 3 && tex.name.startsWith('#')) {
+										let loaded_tex = texture_ids[tex.name.replace(/#/, '')];
+										if (loaded_tex) {
+											tex.fromPath(loaded_tex.path, args.externalDataLoader);
+											tex.namespace = loaded_tex.namespace;
+										}
 									}
-								}
-							})
-						}
-					}
-
-					let loaded;
-					if (args.externalDataLoader) {
-						let external = args.externalDataLoader(parent_path.replaceAll("\\", "/"));
-						if (external) {
-							if (external instanceof Uint8Array) {
-								external = new TextDecoder().decode(external);
+								})
 							}
-							try {
-								loadParentModel({
-									name: PathModule.basename(parent_path),
-									path: parent_path,
-									content: external
-								});
-								loaded = true;
-							} catch {}
+						}
+
+						let loaded;
+						if (args.externalDataLoader) {
+							let external = args.externalDataLoader(parent_path.replaceAll("\\", "/"));
+							if (external) {
+								if (external instanceof Uint8Array) {
+									external = new TextDecoder().decode(external);
+								}
+								try {
+									loadParentModel({
+										name: PathModule.basename(parent_path),
+										path: parent_path,
+										content: external
+									});
+									loaded = true;
+								} catch {}
+							}
+						}
+
+						if (!loaded) {
+							Blockbench.read([parent_path], {}, files => loadParentModel(files[0]));
 						}
 					}
-
-					if (!loaded) {
-						Blockbench.read([parent_path], {}, files => loadParentModel(files[0]));
-					}
-				}
-			})
+				})
+			}
+			let project = Project;
+			setTimeout(() => {
+				project.whenNextOpen(() => {
+					showDialog();
+				});
+			}, 1);
 		}
 		updateSelection()
 

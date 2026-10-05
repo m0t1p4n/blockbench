@@ -300,7 +300,7 @@ export class ReferenceImage {
 		let preview = this.is_blueprint && Preview.all.find(p => p.isOrtho && p.angle == this.attached_side);
 		if (preview && preview.node.isConnected) {
 
-			let zoom = this.getZoomLevel();;
+			let zoom = this.getZoomLevel();
 			let pos_x = this.position[0];
 			let pos_y = this.position[1];
 			
